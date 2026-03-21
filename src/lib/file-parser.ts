@@ -1,7 +1,8 @@
-import { titleToHandle, toMetafieldKey } from "@/lib/mapping-utils";
+import { titleToHandle, toMetafieldKey, splitTitleIntoBaseAndVariants } from "@/lib/mapping-utils";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
+import type { VariantConfig } from "@/lib/mapping-utils";
 
 // ---------------------------------------------------------------------------
 // Country name → ISO 3166-1 alpha-2 lookup
@@ -331,6 +332,301 @@ export function exportToShopifyCsv(
   const a = document.createElement("a");
   a.href = url;
   a.download = fileType === "customer" ? "shopify_customers.csv" : "shopify_products.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// Variant transformation — converts flat/tall source rows into Shopify's
+// multi-row-per-product format (one parent row + N child variant rows).
+// ---------------------------------------------------------------------------
+
+/**
+ * Takes flat source rows (one row per variant) and transforms them into
+ * Shopify's required structure where:
+ *   - Row 1 of each product = full product info + first variant values
+ *   - Row 2+ = only Handle + variant-level fields (product fields blank)
+ *
+ * The mapping table's column assignments are respected — only the variant
+ * option columns and variant-level data columns are handled specially here.
+ *
+ * Returns a new rows array ready to be passed to exportToShopifyCsv.
+ */
+export function applyVariantTransform(
+  sourceRows: Record<string, string>[],
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
+  variantConfig: VariantConfig,
+  fileType: FileType = "product"
+): Record<string, string>[] {
+  if (fileType !== "product") return sourceRows;
+
+  const {
+    optionColumns,
+    groupByColumn,
+    skuColumn,
+    priceColumn,
+    inventoryColumn,
+    titleParsingMode,
+    titleVariantWordCount = 1,
+    titleColumn,
+  } = variantConfig;
+
+  // ── Title-parsing mode: variants are encoded in the title itself ──────────
+  // e.g. "T-Shirt Blue S", "T-Shirt Blue XL" → base "T-Shirt", options ["Blue","S"]
+  if (titleParsingMode) {
+    return applyTitleParsingTransform(
+      sourceRows,
+      mappings,
+      variantConfig,
+      titleColumn || groupByColumn,
+      titleVariantWordCount,
+      skuColumn,
+      priceColumn,
+      inventoryColumn
+    );
+  }
+
+  // Build a map: targetKey -> sourceColumn from current mappings
+  const targetToSource = new Map<string, string>();
+  mappings.forEach((m) => {
+    if (m.targetField) targetToSource.set(m.targetField.key, m.sourceColumn);
+  });
+
+  // Determine which source columns hold product-level data (not variant-specific)
+  const variantOnlyCols = new Set<string>([
+    ...optionColumns,
+    skuColumn,
+    priceColumn,
+    inventoryColumn,
+  ].filter(Boolean));
+
+  // Determine the source column that maps to Handle (or Title, for auto-handle)
+  const handleSourceCol = targetToSource.get("Handle") || targetToSource.get("Title") || groupByColumn;
+
+  // ── Group rows by product identifier ──────────────────────────────────────
+  const productGroups = new Map<string, Record<string, string>[]>();
+  for (const row of sourceRows) {
+    const key = row[groupByColumn] ?? "";
+    if (!productGroups.has(key)) productGroups.set(key, []);
+    productGroups.get(key)!.push(row);
+  }
+
+  // ── Emit Shopify rows ─────────────────────────────────────────────────────
+  const output: Record<string, string>[] = [];
+
+  for (const [, variants] of productGroups) {
+    const parentRow = variants[0];
+
+    // Helper: get the handle value for this product
+    const rawHandle = parentRow[handleSourceCol] ?? parentRow[groupByColumn] ?? "";
+    const handle = titleToHandle(rawHandle);
+
+    variants.forEach((variant, idx) => {
+      const shopifyRow: Record<string, string> = {};
+
+      // Always write Handle on every row
+      shopifyRow["Handle"] = handle;
+
+      if (idx === 0) {
+        // ── Parent row: write all product-level fields ──
+        for (const [targetKey, sourceCol] of targetToSource) {
+          if (targetKey === "Handle") {
+            shopifyRow[targetKey] = handle;
+          } else {
+            shopifyRow[targetKey] = sanitizeText(variant[sourceCol] ?? "");
+          }
+        }
+      } else {
+        // ── Child row: only Handle + variant-level fields ──
+        // All product-level fields remain blank; only variant data is written
+        for (const [targetKey, sourceCol] of targetToSource) {
+          if (targetKey === "Handle") {
+            shopifyRow[targetKey] = handle;
+            continue;
+          }
+          const isVariantLevel = variantOnlyCols.has(sourceCol)
+            || targetKey.startsWith("Option")
+            || targetKey.startsWith("Variant");
+          shopifyRow[targetKey] = isVariantLevel ? sanitizeText(variant[sourceCol] ?? "") : "";
+        }
+      }
+
+      // ── Inject option names/values ──────────────────────────────────────
+      optionColumns.forEach((optCol, i) => {
+        const optNum = i + 1; // 1, 2, 3
+        if (idx === 0) {
+          // Option name only on first row
+          shopifyRow[`Option${optNum} Name`] = optCol;
+        }
+        shopifyRow[`Option${optNum} Value`] = sanitizeText(variant[optCol] ?? "");
+      });
+
+      // ── Inject variant-level data (SKU, Price, Inventory) ───────────────
+      if (skuColumn) shopifyRow["Variant SKU"] = sanitizeText(variant[skuColumn] ?? "");
+      if (priceColumn) shopifyRow["Variant Price"] = sanitizeText(variant[priceColumn] ?? "");
+      if (inventoryColumn) shopifyRow["Variant Inventory Qty"] = sanitizeText(variant[inventoryColumn] ?? "");
+
+      output.push(shopifyRow);
+    });
+  }
+
+  return output;
+}
+
+/**
+ * Title-parsing variant transform.
+ * Each source row has a full title like "T-Shirt Blue S". We:
+ * 1. Strip the last N words to get the base product name → "T-Shirt"
+ * 2. Use the stripped words as variant option values → ["Blue", "S"]
+ * 3. Group rows that share the same base name as one product
+ * 4. Emit Shopify rows with Handle = titleToHandle(base), Title = base,
+ *    Option1 Value / Option2 Value / ... = variant tokens
+ */
+function applyTitleParsingTransform(
+  sourceRows: Record<string, string>[],
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
+  variantConfig: VariantConfig,
+  titleCol: string,
+  wordCount: number,
+  skuColumn: string,
+  priceColumn: string,
+  inventoryColumn: string
+): Record<string, string>[] {
+  // Build targetKey → sourceColumn map
+  const targetToSource = new Map<string, string>();
+  mappings.forEach((m) => {
+    if (m.targetField) targetToSource.set(m.targetField.key, m.sourceColumn);
+  });
+
+  // Determine which targets are variant-level
+  const variantLevelTargets = new Set(["Variant SKU", "Variant Price", "Variant Inventory Qty",
+    "Option1 Name", "Option1 Value", "Option2 Name", "Option2 Value",
+    "Option3 Name", "Option3 Value"]);
+
+  const variantOnlyCols = new Set([skuColumn, priceColumn, inventoryColumn].filter(Boolean));
+
+  // ── Parse & group rows ───────────────────────────────────────────────────
+  // Map: base title → array of { row, tokens }
+  const productGroups = new Map<string, { row: Record<string, string>; tokens: string[] }[]>();
+
+  for (const row of sourceRows) {
+    const fullTitle = String(row[titleCol] ?? "").trim();
+    const { base, variantTokens } = splitTitleIntoBaseAndVariants(fullTitle, wordCount);
+    if (!productGroups.has(base)) productGroups.set(base, []);
+    productGroups.get(base)!.push({ row, tokens: variantTokens });
+  }
+
+  // Infer option names from the first product group that has tokens
+  // (we'll just label them "Option 1", "Option 2", etc. unless
+  //  the user specified custom option column names in variantConfig)
+  const userOptionNames = variantConfig.optionColumns; // may be empty
+
+  const output: Record<string, string>[] = [];
+
+  for (const [base, variants] of productGroups) {
+    const handle = titleToHandle(base);
+
+    variants.forEach(({ row, tokens }, idx) => {
+      const shopifyRow: Record<string, string> = {};
+      shopifyRow["Handle"] = handle;
+
+      if (idx === 0) {
+        // Parent row: write all product-level fields
+        for (const [targetKey, sourceCol] of targetToSource) {
+          if (targetKey === "Handle") {
+            shopifyRow[targetKey] = handle;
+          } else if (targetKey === "Title") {
+            // Override title with the base (stripped) product name
+            shopifyRow[targetKey] = sanitizeText(base);
+          } else {
+            const isVariant = variantLevelTargets.has(targetKey)
+              || variantOnlyCols.has(sourceCol)
+              || targetKey.startsWith("Option")
+              || targetKey.startsWith("Variant");
+            shopifyRow[targetKey] = isVariant ? "" : sanitizeText(row[sourceCol] ?? "");
+          }
+        }
+      } else {
+        // Child rows: only Handle + variant-level fields
+        for (const [targetKey, sourceCol] of targetToSource) {
+          if (targetKey === "Handle") {
+            shopifyRow[targetKey] = handle;
+            continue;
+          }
+          const isVariant = variantLevelTargets.has(targetKey)
+            || variantOnlyCols.has(sourceCol)
+            || targetKey.startsWith("Option")
+            || targetKey.startsWith("Variant");
+          shopifyRow[targetKey] = isVariant ? sanitizeText(row[sourceCol] ?? "") : "";
+        }
+      }
+
+      // ── Inject parsed variant option values ──────────────────────────────
+      tokens.forEach((token, i) => {
+        const optNum = i + 1;
+        const optName = userOptionNames[i] || `Option ${optNum}`;
+        if (idx === 0) {
+          shopifyRow[`Option${optNum} Name`] = optName;
+        }
+        shopifyRow[`Option${optNum} Value`] = sanitizeText(token);
+      });
+
+      // Fill in any option slots without tokens (keep existing Name on first row)
+      if (idx === 0 && tokens.length === 0) {
+        shopifyRow["Option1 Name"] = "Title";
+        shopifyRow["Option1 Value"] = sanitizeText(base);
+      }
+
+      // ── Variant-level data ────────────────────────────────────────────────
+      if (skuColumn) shopifyRow["Variant SKU"] = sanitizeText(row[skuColumn] ?? "");
+      if (priceColumn) shopifyRow["Variant Price"] = sanitizeText(row[priceColumn] ?? "");
+      if (inventoryColumn) shopifyRow["Variant Inventory Qty"] = sanitizeText(row[inventoryColumn] ?? "");
+
+      output.push(shopifyRow);
+    });
+  }
+
+  return output;
+}
+
+/**
+ * Variant-aware export. If a VariantConfig is provided, it transforms the
+ * source rows into Shopify's multi-row-per-product format first, then
+ * exports using the canonical Shopify column order.
+ */
+export function exportToShopifyCsvWithVariants(
+  rows: Record<string, string>[],
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
+  fileType: FileType = "product",
+  variantConfig?: VariantConfig | null
+): void {
+  if (!variantConfig || fileType !== "product") {
+    // Fall back to standard flat export
+    exportToShopifyCsv(rows, mappings, fileType);
+    return;
+  }
+
+  const transformedRows = applyVariantTransform(rows, mappings, variantConfig, fileType);
+
+  // Collect all keys that appear in the transformed rows (maintain Shopify order)
+  const canonicalOrder = SHOPIFY_PRODUCT_FIELDS.map((f) => f.key);
+  const allKeys = new Set<string>();
+  transformedRows.forEach((r) => Object.keys(r).forEach((k) => allKeys.add(k)));
+  const headers = canonicalOrder.filter((k) => allKeys.has(k));
+
+  // Normalise: ensure every row has all headers
+  const normalised = transformedRows.map((row) => {
+    const out: Record<string, string> = {};
+    headers.forEach((h) => (out[h] = row[h] ?? ""));
+    return out;
+  });
+
+  const csv = Papa.unparse({ fields: headers, data: normalised });
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "shopify_products.csv";
   a.click();
   URL.revokeObjectURL(url);
 }

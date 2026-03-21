@@ -8,9 +8,9 @@ import { MappingTable } from "@/components/MappingTable";
 import { FieldSidebar } from "@/components/FieldSidebar";
 import { DataPreview } from "@/components/DataPreview";
 import { ValidationBar } from "@/components/ValidationBar";
-import { VariantSetupModal } from "@/components/VariantSetupModal";
+import { VariantSetupModal, VariantConfig } from "@/components/VariantSetupModal";
 
-import { parseFile, exportToShopifyCsv, ParsedFile } from "@/lib/file-parser";
+import { parseFile, exportToShopifyCsvWithVariants, ParsedFile } from "@/lib/file-parser";
 import {
   autoMapColumns,
   MappingRow,
@@ -34,6 +34,7 @@ function Home() {
   const [previewOpen, setPreviewOpen] = useState(true);
   const [showVariantModal, setShowVariantModal] = useState(false);
   const [variantColumns, setVariantColumns] = useState<string[]>([]);
+  const [variantConfigPerFile, setVariantConfigPerFile] = useState<(VariantConfig | null)[]>([]);
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
 
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
@@ -70,13 +71,11 @@ function Home() {
           const mappings = autoMapColumns(p.headers, type);
           return [...prev, mappings];
         });
+        setVariantConfigPerFile((prev) => [...prev, null]);
 
         if (type === "product") {
           const detected = detectVariantColumns(p.headers);
-          if (detected.length > 0) {
-            setVariantColumns(detected);
-            setShowVariantModal(true);
-          }
+          setVariantColumns(detected);
         }
       }
     } catch (err: unknown) {
@@ -90,6 +89,7 @@ function Home() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
     setFileTypes((prev) => prev.filter((_, i) => i !== index));
     setMappingsPerFile((prev) => prev.filter((_, i) => i !== index));
+    setVariantConfigPerFile((prev) => prev.filter((_, i) => i !== index));
     setActiveFileIndex((prev) => Math.max(0, prev === index ? prev - 1 : prev));
   }, []);
 
@@ -144,9 +144,22 @@ function Home() {
   const validation = validateMappings(activeMappings, activeFileType);
   const canExport = validation.errors === 0 && activeMappings.length > 0;
 
+  const handleVariantConfirm = useCallback((config: VariantConfig) => {
+    setVariantConfigPerFile((prev) => {
+      const next = [...prev];
+      next[activeFileIndex] = config;
+      return next;
+    });
+    setShowVariantModal(false);
+    toast.success("Variant config applied — export will use multi-row format", {
+      style: { background: "#1A1D27", border: "1px solid #96BF4840", color: "#96BF48" },
+    });
+  }, [activeFileIndex]);
+
   const handleExport = () => {
     if (!activeFile) return;
-    exportToShopifyCsv(activeFile.rows, activeMappings, activeFileType);
+    const variantConfig = variantConfigPerFile[activeFileIndex] ?? null;
+    exportToShopifyCsvWithVariants(activeFile.rows, activeMappings, activeFileType, variantConfig);
     toast.success(
       `Exported ${activeFile.rows.length.toLocaleString()} rows as Shopify CSV`,
       {
@@ -240,6 +253,15 @@ function Home() {
               <span style={{ color: "#96BF48" }}>{validation.mapped} mapped</span>
               {validation.warnings > 0 && <span style={{ color: "#F5A623" }}>{validation.warnings} warn</span>}
               {validation.errors > 0 && <span style={{ color: "#E05C5C" }}>{validation.errors} error</span>}
+              {variantConfigPerFile[activeFileIndex] && (
+                <span
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-sm border"
+                  style={{ borderColor: "#96BF4840", background: "#96BF4815", color: "#96BF48" }}
+                >
+                  <Layers size={10} />
+                  variant mode
+                </span>
+              )}
             </div>
           )}
 
@@ -333,18 +355,46 @@ function Home() {
                 ))}
               </div>
 
-              {detectVariantColumns(activeFile.headers).length > 0 && (
-                <button
-                  onClick={() => {
-                    setVariantColumns(detectVariantColumns(activeFile.headers));
-                    setShowVariantModal(true);
-                  }}
-                  className="mt-2 flex items-center gap-2 px-3 py-2 rounded-sm border text-xs transition-colors hover:border-[#96BF4870]"
-                  style={{ borderColor: "#2A2D3A", color: "#96BF48", fontFamily: "Syne, sans-serif" }}
-                >
-                  <Layers size={12} />
-                  Configure Variants
-                </button>
+              {activeFileType === "product" && (
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setVariantColumns(detectVariantColumns(activeFile.headers));
+                      setShowVariantModal(true);
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-sm border text-xs transition-colors hover:border-[#96BF4870]"
+                    style={{
+                      borderColor: variantConfigPerFile[activeFileIndex] ? "#96BF48" : "#2A2D3A",
+                      color: variantConfigPerFile[activeFileIndex] ? "#96BF48" : "#4A4D5E",
+                      fontFamily: "Syne, sans-serif",
+                    }}
+                  >
+                    <Layers size={12} />
+                    {variantConfigPerFile[activeFileIndex] ? "Variants ✓ configured" : "Configure Variants"}
+                  </button>
+                  {variantConfigPerFile[activeFileIndex] && (
+                    <button
+                      onClick={() => {
+                        setVariantConfigPerFile((prev) => {
+                          const next = [...prev];
+                          next[activeFileIndex] = null;
+                          return next;
+                        });
+                        toast("Variant config cleared — export will use flat format", {
+                          style: { background: "#1A1D27", border: "1px solid #2A2D3A", color: "#9095A5" },
+                        });
+                      }}
+                      className="flex items-center gap-1 px-2 py-2 rounded-sm border text-xs transition-colors hover:border-[#E05C5C60]"
+                      style={{
+                        borderColor: "#2A2D3A",
+                        color: "#4A4D5E",
+                        fontFamily: "Syne, sans-serif",
+                      }}
+                    >
+                      ✕ clear
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -446,7 +496,9 @@ function Home() {
         <VariantSetupModal
           columns={activeFile.headers}
           variantColumns={variantColumns}
+          rows={activeFile.rows}
           onClose={() => setShowVariantModal(false)}
+          onConfirm={handleVariantConfirm}
         />
       )}
 
