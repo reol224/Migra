@@ -19,9 +19,10 @@ function isNumericField(key: string) {
   );
 }
 
-function isValidNumeric(value: string) {
-  if (!value || value.trim() === "") return true;
-  return !isNaN(Number(value.replace(/[$,]/g, "")));
+function isValidNumeric(value: unknown) {
+  const str = String(value ?? "");
+  if (!str || str.trim() === "") return true;
+  return !isNaN(Number(str.replace(/[$,]/g, "")));
 }
 
 export function DataPreview({ rows, mappings }: DataPreviewProps) {
@@ -89,7 +90,7 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
               className="border-b border-[#1A1D27] hover:bg-[#2A2D3A20] transition-colors"
             >
               {validMappings.map((m) => {
-                const value = row[m.sourceColumn] || "";
+                const value = String(row[m.sourceColumn] ?? "");
                 const needsNumeric = isNumericField(m.targetField!.key);
                 const hasError = needsNumeric && !isValidNumeric(value);
 

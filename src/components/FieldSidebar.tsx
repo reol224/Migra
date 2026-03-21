@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { SHOPIFY_FIELDS, SHOPIFY_FIELD_CATEGORIES } from "@/lib/shopify-fields";
+import { SHOPIFY_FIELDS, SHOPIFY_FIELD_CATEGORIES, FileType, getFieldsForType } from "@/lib/shopify-fields";
 import { MappingRow } from "@/lib/mapping-utils";
 import { cn } from "@/lib/utils";
 
@@ -8,11 +8,15 @@ interface FieldSidebarProps {
   mappings: MappingRow[];
   collapsed: boolean;
   onToggle: () => void;
+  fileType?: FileType;
 }
 
-export function FieldSidebar({ mappings, collapsed, onToggle }: FieldSidebarProps) {
+export function FieldSidebar({ mappings, collapsed, onToggle, fileType }: FieldSidebarProps) {
+  const activeFields = fileType ? getFieldsForType(fileType) : SHOPIFY_FIELDS;
+  const activeCategories = [...new Set(activeFields.map((f) => f.category))];
+
   const [expandedCats, setExpandedCats] = useState<Set<string>>(
-    new Set(SHOPIFY_FIELD_CATEGORIES)
+    new Set(activeCategories)
   );
 
   const mappedKeys = new Set(
@@ -85,8 +89,8 @@ export function FieldSidebar({ mappings, collapsed, onToggle }: FieldSidebarProp
 
       {/* Field List */}
       <div className="flex-1 overflow-y-auto">
-        {SHOPIFY_FIELD_CATEGORIES.map((cat) => {
-          const fields = SHOPIFY_FIELDS.filter((f) => f.category === cat);
+        {activeCategories.map((cat) => {
+          const fields = activeFields.filter((f) => f.category === cat);
           const isExpanded = expandedCats.has(cat);
           const mappedCount = fields.filter((f) => mappedKeys.has(f.key)).length;
 

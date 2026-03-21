@@ -1,5 +1,5 @@
 import Fuse from "fuse.js";
-import { SHOPIFY_FIELDS, ShopifyField } from "./shopify-fields";
+import { SHOPIFY_FIELDS, ShopifyField, FileType, getFieldsForType } from "./shopify-fields";
 
 export interface MappingRow {
   sourceColumn: string;
@@ -10,8 +10,9 @@ export interface MappingRow {
 }
 
 // Simple fuzzy match using Fuse.js
-export function autoMapColumns(sourceColumns: string[]): MappingRow[] {
-  const fuse = new Fuse(SHOPIFY_FIELDS, {
+export function autoMapColumns(sourceColumns: string[], fileType?: FileType): MappingRow[] {
+  const fields = fileType ? getFieldsForType(fileType) : SHOPIFY_FIELDS;
+  const fuse = new Fuse(fields, {
     keys: ["key", "label"],
     threshold: 0.5,
     includeScore: true,
@@ -62,13 +63,14 @@ export function detectVariantColumns(columns: string[]): string[] {
   );
 }
 
-export function validateMappings(mappings: MappingRow[]): {
+export function validateMappings(mappings: MappingRow[], fileType?: FileType): {
   mapped: number;
   warnings: number;
   errors: number;
   errorFields: string[];
 } {
-  const requiredFields = SHOPIFY_FIELDS.filter((f) => f.required).map((f) => f.key);
+  const fields = fileType ? getFieldsForType(fileType) : SHOPIFY_FIELDS;
+  const requiredFields = fields.filter((f) => f.required).map((f) => f.key);
   const mappedFieldKeys = mappings
     .filter((m) => m.targetField !== null)
     .map((m) => m.targetField!.key);

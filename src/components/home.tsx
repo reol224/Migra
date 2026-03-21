@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Download, ChevronUp, ChevronDown, Layers, Package, Users } from "lucide-react";
+import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -17,10 +17,16 @@ import {
   validateMappings,
   detectVariantColumns,
 } from "@/lib/mapping-utils";
-import { ShopifyField } from "@/lib/shopify-fields";
+import { ShopifyField, FileType } from "@/lib/shopify-fields";
+
+interface PendingFile {
+  parsed: ParsedFile;
+  resolve: (type: FileType) => void;
+}
 
 function Home() {
   const [files, setFiles] = useState<ParsedFile[]>([]);
+  const [fileTypes, setFileTypes] = useState<FileType[]>([]);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [mappingsPerFile, setMappingsPerFile] = useState<MappingRow[][]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -28,45 +34,61 @@ function Home() {
   const [previewOpen, setPreviewOpen] = useState(true);
   const [showVariantModal, setShowVariantModal] = useState(false);
   const [variantColumns, setVariantColumns] = useState<string[]>([]);
+  const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
 
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
   const activeFile = files[activeFileIndex];
+  const activeFileType = fileTypes[activeFileIndex];
+
+  // Ask user to pick file type, returns a promise resolving to the chosen type
+  const askFileType = useCallback((parsed: ParsedFile): Promise<FileType> => {
+    return new Promise((resolve) => {
+      setPendingFile({ parsed, resolve });
+    });
+  }, []);
+
+  const handleTypeChoice = useCallback((type: FileType) => {
+    if (!pendingFile) return;
+    pendingFile.resolve(type);
+    setPendingFile(null);
+  }, [pendingFile]);
 
   const handleFilesAccepted = useCallback(async (newFiles: File[]) => {
     setIsLoading(true);
     try {
-      const parsed: ParsedFile[] = [];
       for (const f of newFiles) {
         const p = await parseFile(f);
-        parsed.push(p);
-      }
+        const type = await askFileType(p);
 
-      const allFiles = [...files, ...parsed];
-      const allMappings = [...mappingsPerFile];
+        setFiles((prev) => {
+          const next = [...prev, p];
+          setActiveFileIndex(next.length - 1);
+          return next;
+        });
+        setFileTypes((prev) => [...prev, type]);
+        setMappingsPerFile((prev) => {
+          const mappings = autoMapColumns(p.headers, type);
+          return [...prev, mappings];
+        });
 
-      for (const p of parsed) {
-        const mappings = autoMapColumns(p.headers);
-        allMappings.push(mappings);
-
-        const detected = detectVariantColumns(p.headers);
-        if (detected.length > 0) {
-          setVariantColumns(detected);
-          setShowVariantModal(true);
+        if (type === "product") {
+          const detected = detectVariantColumns(p.headers);
+          if (detected.length > 0) {
+            setVariantColumns(detected);
+            setShowVariantModal(true);
+          }
         }
       }
-
-      setFiles(allFiles);
-      setMappingsPerFile(allMappings);
-      setActiveFileIndex(allFiles.length - 1);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to parse file");
     } finally {
       setIsLoading(false);
     }
-  }, [files, mappingsPerFile]);
+  }, [askFileType]);
 
   const handleRemoveFile = useCallback((index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
+    setFileTypes((prev) => prev.filter((_, i) => i !== index));
     setMappingsPerFile((prev) => prev.filter((_, i) => i !== index));
     setActiveFileIndex((prev) => Math.max(0, prev === index ? prev - 1 : prev));
   }, []);
@@ -93,7 +115,7 @@ function Home() {
     [activeFileIndex]
   );
 
-  const validation = validateMappings(activeMappings);
+  const validation = validateMappings(activeMappings, activeFileType);
   const canExport = validation.errors === 0 && activeMappings.length > 0;
 
   const handleExport = () => {
@@ -111,11 +133,7 @@ function Home() {
     );
   };
 
-  const fileType = (name: string) => {
-    const lower = name.toLowerCase();
-    if (lower.includes("customer")) return "customers";
-    return "products";
-  };
+  const fileTypeLabel = (idx: number) => fileTypes[idx] === "customer" ? "customers" : "products";
 
   return (
     <div
@@ -172,7 +190,7 @@ function Home() {
                     : "border-[#2A2D3A] bg-transparent hover:border-[#3A3D4A]"
                 )}
               >
-                {fileType(f.name) === "customers" ? (
+                {fileTypeLabel(i) === "customers" ? (
                   <Users size={11} style={{ color: i === activeFileIndex ? "#96BF48" : "#4A4D5E" }} />
                 ) : (
                   <Package size={11} style={{ color: i === activeFileIndex ? "#96BF48" : "#4A4D5E" }} />
@@ -234,12 +252,36 @@ function Home() {
 
           {activeFile && (
             <div className="mt-4 pt-4 border-t flex flex-col gap-2" style={{ borderColor: "#2A2D3A" }}>
-              <span
-                className="text-xs uppercase tracking-widest"
-                style={{ color: "#4A4D5E", fontFamily: "Syne, sans-serif" }}
-              >
-                File Stats
-              </span>
+              <div className="flex items-center justify-between">
+                <span
+                  className="text-xs uppercase tracking-widest"
+                  style={{ color: "#4A4D5E", fontFamily: "Syne, sans-serif" }}
+                >
+                  File Stats
+                </span>
+                {activeFileType && (
+                  <span
+                    style={{
+                      fontSize: "10px",
+                      fontFamily: "Syne, sans-serif",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      padding: "2px 6px",
+                      borderRadius: "2px",
+                      backgroundColor: activeFileType === "customer" ? "#96BF4820" : "#1A3A5E20",
+                      border: `1px solid ${activeFileType === "customer" ? "#96BF4850" : "#4A8FBF50"}`,
+                      color: activeFileType === "customer" ? "#96BF48" : "#4A9FD4",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                    }}
+                  >
+                    {activeFileType === "customer" ? <Users size={9} /> : <Package size={9} />}
+                    {activeFileType}
+                  </span>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { label: "Rows", value: activeFile.rowCount.toLocaleString() },
@@ -302,7 +344,7 @@ function Home() {
           </div>
 
           <div className="flex-1 min-h-0" style={{ background: "#0F1117", position: "relative" }}>
-            <MappingTable mappings={activeMappings} onMappingChange={handleMappingChange} />
+            <MappingTable mappings={activeMappings} onMappingChange={handleMappingChange} fileType={activeFileType} />
           </div>
 
           {/* Preview Panel */}
@@ -369,6 +411,7 @@ function Home() {
             mappings={activeMappings}
             collapsed={sidebarCollapsed}
             onToggle={() => setSidebarCollapsed((v) => !v)}
+            fileType={activeFileType}
           />
         </div>
       </div>
@@ -379,6 +422,232 @@ function Home() {
           variantColumns={variantColumns}
           onClose={() => setShowVariantModal(false)}
         />
+      )}
+
+      {/* File Type Selection Modal */}
+      {pendingFile && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 999999,
+            backgroundColor: "rgba(15,17,23,0.85)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: "#1A1D27",
+              border: "1px solid #2A2D3A",
+              borderRadius: "4px",
+              padding: "32px",
+              width: "420px",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
+            }}
+          >
+            {/* Icon + Filename */}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "20px" }}>
+              <div
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  backgroundColor: "#96BF4815",
+                  border: "1px solid #96BF4840",
+                  borderRadius: "3px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <FileText size={16} color="#96BF48" />
+              </div>
+              <div>
+                <p
+                  style={{
+                    fontSize: "13px",
+                    fontFamily: "IBM Plex Mono, monospace",
+                    color: "#C8CADE",
+                    margin: 0,
+                    lineHeight: 1.2,
+                    maxWidth: "300px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {pendingFile.parsed.name}
+                </p>
+                <p
+                  style={{
+                    fontSize: "11px",
+                    fontFamily: "IBM Plex Mono, monospace",
+                    color: "#4A4D5E",
+                    margin: 0,
+                    marginTop: "2px",
+                  }}
+                >
+                  {pendingFile.parsed.rowCount.toLocaleString()} rows · {pendingFile.parsed.headers.length} columns
+                </p>
+              </div>
+            </div>
+
+            <p
+              style={{
+                fontSize: "16px",
+                fontFamily: "Syne, sans-serif",
+                fontWeight: 700,
+                color: "#C8CADE",
+                margin: 0,
+                marginBottom: "6px",
+              }}
+            >
+              What type of data is this?
+            </p>
+            <p
+              style={{
+                fontSize: "12px",
+                fontFamily: "IBM Plex Mono, monospace",
+                color: "#4A4D5E",
+                margin: 0,
+                marginBottom: "24px",
+              }}
+            >
+              This determines which Shopify fields are available for mapping.
+            </p>
+
+            <div style={{ display: "flex", gap: "12px" }}>
+              {/* Products */}
+              <button
+                onClick={() => handleTypeChoice("product")}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: "10px",
+                  padding: "20px 16px",
+                  backgroundColor: "#0F1117",
+                  border: "1px solid #2A2D3A",
+                  borderRadius: "3px",
+                  cursor: "pointer",
+                  transition: "border-color 0.15s",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#96BF48")}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#2A2D3A")}
+              >
+                <div
+                  style={{
+                    width: "40px",
+                    height: "40px",
+                    backgroundColor: "#96BF4815",
+                    border: "1px solid #96BF4840",
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Package size={18} color="#96BF48" />
+                </div>
+                <div>
+                  <p
+                    style={{
+                      fontSize: "13px",
+                      fontFamily: "Syne, sans-serif",
+                      fontWeight: 700,
+                      color: "#C8CADE",
+                      margin: 0,
+                      textAlign: "center",
+                    }}
+                  >
+                    Products
+                  </p>
+                  <p
+                    style={{
+                      fontSize: "11px",
+                      fontFamily: "IBM Plex Mono, monospace",
+                      color: "#4A4D5E",
+                      margin: 0,
+                      marginTop: "3px",
+                      textAlign: "center",
+                    }}
+                  >
+                    Titles, variants,
+                    <br />
+                    inventory, images
+                  </p>
+                </div>
+              </button>
+
+              {/* Customers */}
+              <button
+                onClick={() => handleTypeChoice("customer")}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: "10px",
+                  padding: "20px 16px",
+                  backgroundColor: "#0F1117",
+                  border: "1px solid #2A2D3A",
+                  borderRadius: "3px",
+                  cursor: "pointer",
+                  transition: "border-color 0.15s",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#96BF48")}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#2A2D3A")}
+              >
+                <div
+                  style={{
+                    width: "40px",
+                    height: "40px",
+                    backgroundColor: "#96BF4815",
+                    border: "1px solid #96BF4840",
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Users size={18} color="#96BF48" />
+                </div>
+                <div>
+                  <p
+                    style={{
+                      fontSize: "13px",
+                      fontFamily: "Syne, sans-serif",
+                      fontWeight: 700,
+                      color: "#C8CADE",
+                      margin: 0,
+                      textAlign: "center",
+                    }}
+                  >
+                    Customers
+                  </p>
+                  <p
+                    style={{
+                      fontSize: "11px",
+                      fontFamily: "IBM Plex Mono, monospace",
+                      color: "#4A4D5E",
+                      margin: 0,
+                      marginTop: "3px",
+                      textAlign: "center",
+                    }}
+                  >
+                    Names, emails,
+                    <br />
+                    addresses, tags
+                  </p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

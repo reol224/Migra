@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Check, ChevronDown, X, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SHOPIFY_FIELDS, ShopifyField } from "@/lib/shopify-fields";
+import { SHOPIFY_FIELDS, ShopifyField, FileType, getFieldsForType } from "@/lib/shopify-fields";
 import { MappingRow } from "@/lib/mapping-utils";
 
 interface ConfidenceBadgeProps {
@@ -53,9 +53,10 @@ interface FieldDropdownProps {
   value: ShopifyField | null;
   onChange: (field: ShopifyField | null) => void;
   usedFieldKeys: Set<string>;
+  fields: ShopifyField[];
 }
 
-function FieldDropdown({ value, onChange, usedFieldKeys }: FieldDropdownProps) {
+function FieldDropdown({ value, onChange, usedFieldKeys, fields }: FieldDropdownProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
@@ -92,7 +93,7 @@ function FieldDropdown({ value, onChange, usedFieldKeys }: FieldDropdownProps) {
     setOpen((v) => !v);
   };
 
-  const filtered = SHOPIFY_FIELDS.filter((f) => {
+  const filtered = fields.filter((f) => {
     const matchesSearch =
       f.label.toLowerCase().includes(search.toLowerCase()) ||
       f.category.toLowerCase().includes(search.toLowerCase());
@@ -265,9 +266,11 @@ function FieldDropdown({ value, onChange, usedFieldKeys }: FieldDropdownProps) {
 interface MappingTableProps {
   mappings: MappingRow[];
   onMappingChange: (index: number, field: ShopifyField | null) => void;
+  fileType?: FileType;
 }
 
-export function MappingTable({ mappings, onMappingChange }: MappingTableProps) {
+export function MappingTable({ mappings, onMappingChange, fileType }: MappingTableProps) {
+  const activeFields = fileType ? getFieldsForType(fileType) : SHOPIFY_FIELDS;
   const usedFieldKeys = new Set(
     mappings
       .filter((m) => m.targetField !== null && !m.targetField.repeatable)
@@ -360,6 +363,7 @@ export function MappingTable({ mappings, onMappingChange }: MappingTableProps) {
               value={row.targetField}
               onChange={(field) => onMappingChange(i, field)}
               usedFieldKeys={usedFieldKeys}
+              fields={activeFields}
             />
 
             {/* Confidence */}

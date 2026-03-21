@@ -7,14 +7,17 @@ export interface ShopifyField {
   description?: string;
 }
 
-export const SHOPIFY_FIELDS: ShopifyField[] = [
+export type FileType = "product" | "customer";
+
+// ─── Product fields (from Official Shopify Product Template) ─────────────────
+export const SHOPIFY_PRODUCT_FIELDS: ShopifyField[] = [
   // Product Info
-  { key: "Handle", label: "Handle", category: "Product Info", required: true, description: "Unique identifier (URL slug)" },
+  { key: "Handle", label: "Handle", category: "Product Info", required: true, description: "Unique identifier / URL slug" },
   { key: "Title", label: "Title", category: "Product Info", required: true, description: "Product title" },
-  { key: "Body (HTML)", label: "Body (HTML)", category: "Product Info", required: false, description: "Product description" },
-  { key: "Vendor", label: "Vendor", category: "Product Info", required: false, description: "Product vendor/brand" },
+  { key: "Body (HTML)", label: "Body (HTML)", category: "Product Info", required: false, description: "Product description (HTML)" },
+  { key: "Vendor", label: "Vendor", category: "Product Info", required: false, description: "Product vendor / brand" },
   { key: "Product Category", label: "Product Category", category: "Product Info", required: false, description: "Shopify product category" },
-  { key: "Type", label: "Type", category: "Product Info", required: false, description: "Product type" },
+  { key: "Type", label: "Type", category: "Product Info", required: false, description: "Custom product type" },
   { key: "Tags", label: "Tags", category: "Product Info", required: false, description: "Comma-separated tags" },
   { key: "Published", label: "Published", category: "Product Info", required: false, description: "true or false" },
   { key: "Status", label: "Status", category: "Product Info", required: false, description: "active, draft, or archived" },
@@ -44,32 +47,45 @@ export const SHOPIFY_FIELDS: ShopifyField[] = [
   { key: "Image Alt Text", label: "Image Alt Text", category: "Images", required: false, repeatable: true },
   { key: "Variant Image", label: "Variant Image", category: "Images", required: false },
 
-  // Inventory
+  // Inventory / Shipping
   { key: "Variant Weight Unit", label: "Variant Weight Unit", category: "Inventory", required: false },
   { key: "Variant Tax Code", label: "Variant Tax Code", category: "Inventory", required: false },
   { key: "Cost per item", label: "Cost per item", category: "Inventory", required: false },
   { key: "Included / United States", label: "Included / United States", category: "Inventory", required: false },
+  { key: "Price / United States", label: "Price / United States", category: "Inventory", required: false },
+  { key: "Compare At Price / United States", label: "Compare At Price / United States", category: "Inventory", required: false },
+];
 
-  // Customer Info
+// ─── Customer fields (from Official Shopify Customer Template) ───────────────
+export const SHOPIFY_CUSTOMER_FIELDS: ShopifyField[] = [
   { key: "First Name", label: "First Name", category: "Customer Info", required: false },
   { key: "Last Name", label: "Last Name", category: "Customer Info", required: false },
-  { key: "Email", label: "Email", category: "Customer Info", required: false },
-  { key: "Company", label: "Company", category: "Customer Info", required: false },
-  { key: "Address1", label: "Address1", category: "Customer Info", required: false },
-  { key: "Address2", label: "Address2", category: "Customer Info", required: false },
-  { key: "City", label: "City", category: "Customer Info", required: false },
-  { key: "Province", label: "Province", category: "Customer Info", required: false },
-  { key: "Province Code", label: "Province Code", category: "Customer Info", required: false },
-  { key: "Country", label: "Country", category: "Customer Info", required: false },
-  { key: "Country Code", label: "Country Code", category: "Customer Info", required: false },
-  { key: "Zip", label: "Zip", category: "Customer Info", required: false },
+  { key: "Email", label: "Email", category: "Customer Info", required: true, description: "Customer email (required)" },
+  { key: "Accepts Email Marketing", label: "Accepts Email Marketing", category: "Customer Info", required: false, description: "yes or no" },
+  { key: "Default Address Company", label: "Default Address Company", category: "Default Address", required: false },
+  { key: "Default Address Address1", label: "Default Address Address1", category: "Default Address", required: false },
+  { key: "Default Address Address2", label: "Default Address Address2", category: "Default Address", required: false },
+  { key: "Default Address City", label: "Default Address City", category: "Default Address", required: false },
+  { key: "Default Address Province Code", label: "Default Address Province Code", category: "Default Address", required: false, description: "e.g. ON, CA" },
+  { key: "Default Address Country Code", label: "Default Address Country Code", category: "Default Address", required: false, description: "e.g. CA, US" },
+  { key: "Default Address Zip", label: "Default Address Zip", category: "Default Address", required: false },
+  { key: "Default Address Phone", label: "Default Address Phone", category: "Default Address", required: false },
   { key: "Phone", label: "Phone", category: "Customer Info", required: false },
-  { key: "Accepts Email Marketing", label: "Accepts Email Marketing", category: "Customer Info", required: false },
-  { key: "Total Spent", label: "Total Spent", category: "Customer Info", required: false },
-  { key: "Total Orders", label: "Total Orders", category: "Customer Info", required: false },
+  { key: "Accepts SMS Marketing", label: "Accepts SMS Marketing", category: "Customer Info", required: false, description: "yes or no" },
+  { key: "Tags", label: "Tags", category: "Customer Info", required: false, description: "Comma-separated tags" },
   { key: "Note", label: "Note", category: "Customer Info", required: false },
-  { key: "Tax Exempt", label: "Tax Exempt", category: "Customer Info", required: false },
+  { key: "Tax Exempt", label: "Tax Exempt", category: "Customer Info", required: false, description: "yes or no" },
 ];
+
+// ─── Combined (legacy / fallback) ────────────────────────────────────────────
+export const SHOPIFY_FIELDS: ShopifyField[] = [
+  ...SHOPIFY_PRODUCT_FIELDS,
+  ...SHOPIFY_CUSTOMER_FIELDS,
+];
+
+export function getFieldsForType(type: FileType): ShopifyField[] {
+  return type === "customer" ? SHOPIFY_CUSTOMER_FIELDS : SHOPIFY_PRODUCT_FIELDS;
+}
 
 export const SHOPIFY_FIELD_CATEGORIES = [...new Set(SHOPIFY_FIELDS.map(f => f.category))];
 
