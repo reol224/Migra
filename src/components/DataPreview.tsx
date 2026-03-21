@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { MappingRow } from "@/lib/mapping-utils";
+import { MappingRow, titleToHandle } from "@/lib/mapping-utils";
 
 interface DataPreviewProps {
   rows: Record<string, string>[];
@@ -31,6 +31,9 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
 
   const validMappings = mappings.filter((m) => m.targetField !== null);
   const previewRows = rows.slice(0, 8);
+
+  // Find the source column mapped to Title (used to auto-generate Handle)
+  const titleMapping = validMappings.find((m) => m.targetField?.key === "Title");
 
   const mappingKey = validMappings.map((m) => `${m.sourceColumn}:${m.targetField?.key}`).join("|");
 
@@ -90,7 +93,18 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
               className="border-b border-[#1A1D27] hover:bg-[#2A2D3A20] transition-colors"
             >
               {validMappings.map((m) => {
-                const value = String(row[m.sourceColumn] ?? "");
+                let value = String(row[m.sourceColumn] ?? "");
+
+                // Auto-generate Handle from Title
+                if (m.targetField!.key === "Handle") {
+                  if (!value && titleMapping) {
+                    // No handle column in source — derive from Title
+                    value = titleToHandle(String(row[titleMapping.sourceColumn] ?? ""));
+                  } else if (value) {
+                    // Slugify whatever is in the handle column
+                    value = titleToHandle(value);
+                  }
+                }
                 const needsNumeric = isNumericField(m.targetField!.key);
                 const hasError = needsNumeric && !isValidNumeric(value);
 

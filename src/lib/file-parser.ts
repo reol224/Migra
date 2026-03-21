@@ -1,3 +1,4 @@
+import { titleToHandle } from "@/lib/mapping-utils";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 
@@ -60,12 +61,39 @@ export function exportToShopifyCsv(
   mappings: { sourceColumn: string; targetField: { key: string } | null }[]
 ): void {
   const validMappings = mappings.filter((m) => m.targetField !== null);
-  const headers = validMappings.map((m) => m.targetField!.key);
+
+  // Find the Title source column for auto-generating Handle
+  const titleMapping = validMappings.find((m) => m.targetField!.key === "Title");
+  const handleMapping = validMappings.find((m) => m.targetField!.key === "Handle");
+
+  // If Handle is not explicitly mapped but Title is, inject Handle column right after Title
+  const needsAutoHandle = !handleMapping && !!titleMapping;
+  const titleIndex = validMappings.findIndex((m) => m.targetField!.key === "Title");
+
+  const headers: string[] = [];
+  validMappings.forEach((m, i) => {
+    headers.push(m.targetField!.key);
+    // Inject Handle right after Title if not already present
+    if (needsAutoHandle && i === titleIndex) {
+      headers.push("Handle");
+    }
+  });
 
   const transformedRows = rows.map((row) => {
     const newRow: Record<string, string> = {};
-    validMappings.forEach((m) => {
-      newRow[m.targetField!.key] = row[m.sourceColumn] || "";
+    validMappings.forEach((m, i) => {
+      let val = row[m.sourceColumn] || "";
+
+      if (m.targetField!.key === "Handle") {
+        val = val ? titleToHandle(val) : titleMapping ? titleToHandle(row[titleMapping.sourceColumn] || "") : "";
+      }
+
+      newRow[m.targetField!.key] = val;
+
+      // Inject auto-generated Handle right after Title
+      if (needsAutoHandle && i === titleIndex) {
+        newRow["Handle"] = titleToHandle(row[titleMapping!.sourceColumn] || "");
+      }
     });
     return newRow;
   });

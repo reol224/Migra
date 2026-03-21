@@ -56,6 +56,20 @@ export function autoMapColumns(sourceColumns: string[], fileType?: FileType): Ma
   });
 }
 
+/**
+ * Converts a product title to a Shopify-style handle.
+ * e.g. "FREEZE DRIED SKITTLES" → "freeze-dried-skittles"
+ */
+export function titleToHandle(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")   // remove non-alphanumeric (keep spaces & hyphens)
+    .replace(/\s+/g, "-")            // spaces → hyphens
+    .replace(/-+/g, "-")             // collapse multiple hyphens
+    .replace(/^-|-$/g, "");          // trim leading/trailing hyphens
+}
+
 export function detectVariantColumns(columns: string[]): string[] {
   const variantKeywords = ["size", "color", "colour", "material", "style", "flavor", "flavour", "finish", "pattern", "option"];
   return columns.filter((col) =>
@@ -75,7 +89,12 @@ export function validateMappings(mappings: MappingRow[], fileType?: FileType): {
     .filter((m) => m.targetField !== null)
     .map((m) => m.targetField!.key);
 
-  const missingRequired = requiredFields.filter((f) => !mappedFieldKeys.includes(f));
+  // Handle is auto-generated from Title, so treat it as satisfied if Title is mapped
+  const titleIsMapped = mappedFieldKeys.includes("Title");
+  const missingRequired = requiredFields.filter((f) => {
+    if (f === "Handle" && titleIsMapped) return false;
+    return !mappedFieldKeys.includes(f);
+  });
   const mapped = mappings.filter((m) => m.targetField !== null).length;
   const warnings = mappings.filter((m) => m.hasWarning && m.targetField !== null).length;
 
