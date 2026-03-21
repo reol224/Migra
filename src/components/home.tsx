@@ -120,7 +120,7 @@ function Home() {
 
   const handleExport = () => {
     if (!activeFile) return;
-    exportToShopifyCsv(activeFile.rows, activeMappings);
+    exportToShopifyCsv(activeFile.rows, activeMappings, activeFileType);
     toast.success(
       `Exported ${activeFile.rows.length.toLocaleString()} rows as Shopify CSV`,
       {
