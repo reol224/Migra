@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, ChevronDown, X, Search } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Search, Database } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SHOPIFY_FIELDS, ShopifyField, FileType, getFieldsForType } from "@/lib/shopify-fields";
-import { MappingRow } from "@/lib/mapping-utils";
+import { MappingRow, toMetafieldKey } from "@/lib/mapping-utils";
 
 interface ConfidenceBadgeProps {
   confidence: number;
@@ -266,10 +266,11 @@ function FieldDropdown({ value, onChange, usedFieldKeys, fields }: FieldDropdown
 interface MappingTableProps {
   mappings: MappingRow[];
   onMappingChange: (index: number, field: ShopifyField | null) => void;
+  onMetafieldToggle: (index: number) => void;
   fileType?: FileType;
 }
 
-export function MappingTable({ mappings, onMappingChange, fileType }: MappingTableProps) {
+export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, fileType }: MappingTableProps) {
   const activeFields = fileType ? getFieldsForType(fileType) : SHOPIFY_FIELDS;
   const usedFieldKeys = new Set(
     mappings
@@ -300,7 +301,7 @@ export function MappingTable({ mappings, onMappingChange, fileType }: MappingTab
       {/* Table Header */}
       <div
         className="grid gap-2 px-3 py-2 border-b border-[#2A2D3A] shrink-0"
-        style={{ gridTemplateColumns: "1fr 16px 1fr 64px" }}
+        style={{ gridTemplateColumns: "1fr 16px 1fr 64px 28px" }}
       >
         <span
           className="text-xs uppercase tracking-widest"
@@ -321,6 +322,7 @@ export function MappingTable({ mappings, onMappingChange, fileType }: MappingTab
         >
           Match
         </span>
+        <span />
       </div>
 
       {/* Table Rows */}
@@ -330,45 +332,91 @@ export function MappingTable({ mappings, onMappingChange, fileType }: MappingTab
             key={row.sourceColumn}
             className="grid gap-2 px-3 py-2 border-b border-[#1A1D27] hover:bg-[#1A1D2740] transition-colors items-center"
             style={{
-              gridTemplateColumns: "1fr 16px 1fr 64px",
+              gridTemplateColumns: "1fr 16px 1fr 64px 28px",
               animation: `fadeSlideIn 0.2s ease forwards`,
               animationDelay: `${i * 30}ms`,
               opacity: 0,
+              backgroundColor: row.asMetafield ? "#1A1D2780" : undefined,
             }}
           >
             {/* Source Column */}
             <div className="flex items-center gap-2">
-              {row.hasWarning && !row.targetField && (
+              {row.asMetafield ? (
+                <Database size={12} style={{ color: "#96BF48" }} className="shrink-0" />
+              ) : row.hasWarning && !row.targetField ? (
                 <AlertTriangle size={12} style={{ color: "#F5A623" }} className="shrink-0" />
-              )}
-              {row.targetField && (
+              ) : row.targetField ? (
                 <Check size={12} style={{ color: "#96BF48" }} className="shrink-0" />
-              )}
-              <span
-                className="text-xs truncate"
-                style={{
-                  color: "#C8CADE",
-                  fontFamily: "IBM Plex Mono, monospace",
-                }}
-              >
-                {row.sourceColumn}
-              </span>
+              ) : null}
+              <div className="flex flex-col min-w-0">
+                <span
+                  className="text-xs truncate"
+                  style={{
+                    color: "#C8CADE",
+                    fontFamily: "IBM Plex Mono, monospace",
+                  }}
+                >
+                  {row.sourceColumn}
+                </span>
+                {row.asMetafield && (
+                  <span
+                    className="text-xs truncate mt-0.5"
+                    style={{
+                      color: "#96BF4880",
+                      fontFamily: "IBM Plex Mono, monospace",
+                      fontSize: "10px",
+                    }}
+                  >
+                    {toMetafieldKey(row.sourceColumn)}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Arrow */}
             <span style={{ color: "#2A2D3A", fontSize: 14 }}>→</span>
 
-            {/* Target Field Dropdown */}
-            <FieldDropdown
-              value={row.targetField}
-              onChange={(field) => onMappingChange(i, field)}
-              usedFieldKeys={usedFieldKeys}
-              fields={activeFields}
-            />
+            {/* Target Field Dropdown — disabled if metafield */}
+            {row.asMetafield ? (
+              <div
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm border"
+                style={{
+                  border: "1px solid #96BF4830",
+                  backgroundColor: "#96BF4808",
+                  opacity: 0.6,
+                }}
+              >
+                <span
+                  className="flex-1 text-xs truncate"
+                  style={{ color: "#96BF48", fontFamily: "IBM Plex Mono, monospace" }}
+                >
+                  metafield
+                </span>
+              </div>
+            ) : (
+              <FieldDropdown
+                value={row.targetField}
+                onChange={(field) => onMappingChange(i, field)}
+                usedFieldKeys={usedFieldKeys}
+                fields={activeFields}
+              />
+            )}
 
-            {/* Confidence */}
+            {/* Confidence / Status */}
             <div className="flex justify-end">
-              {row.targetField && row.confidence > 0 && !row.isManual ? (
+              {row.asMetafield ? (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded-sm border"
+                  style={{
+                    color: "#96BF48",
+                    borderColor: "#96BF4840",
+                    backgroundColor: "#96BF4810",
+                    fontFamily: "IBM Plex Mono, monospace",
+                  }}
+                >
+                  meta
+                </span>
+              ) : row.targetField && row.confidence > 0 && !row.isManual ? (
                 <ConfidenceBadge confidence={row.confidence} />
               ) : row.isManual ? (
                 <span
@@ -395,6 +443,37 @@ export function MappingTable({ mappings, onMappingChange, fileType }: MappingTab
                   none
                 </span>
               )}
+            </div>
+
+            {/* Metafield Toggle Button */}
+            <div className="flex justify-center">
+              <button
+                onClick={() => onMetafieldToggle(i)}
+                title={row.asMetafield ? "Remove metafield" : "Keep as metafield"}
+                className="rounded-sm border transition-all"
+                style={{
+                  width: 22,
+                  height: 22,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: row.asMetafield ? "#96BF4820" : "transparent",
+                  borderColor: row.asMetafield ? "#96BF4860" : "#2A2D3A",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+                onMouseEnter={(e) => {
+                  if (!row.asMetafield) e.currentTarget.style.borderColor = "#96BF4860";
+                }}
+                onMouseLeave={(e) => {
+                  if (!row.asMetafield) e.currentTarget.style.borderColor = "#2A2D3A";
+                }}
+              >
+                <Database
+                  size={11}
+                  style={{ color: row.asMetafield ? "#96BF48" : "#4A4D5E" }}
+                />
+              </button>
             </div>
           </div>
         ))}

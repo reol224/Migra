@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { MappingRow, titleToHandle } from "@/lib/mapping-utils";
+import { MappingRow, titleToHandle, toMetafieldKey } from "@/lib/mapping-utils";
 
 interface DataPreviewProps {
   rows: Record<string, string>[];
@@ -30,12 +30,16 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
   const flashRef = useRef<HTMLDivElement>(null);
 
   const validMappings = mappings.filter((m) => m.targetField !== null);
+  const metafieldMappings = mappings.filter((m) => m.targetField === null && m.asMetafield);
   const previewRows = rows.slice(0, 8);
 
   // Find the source column mapped to Title (used to auto-generate Handle)
   const titleMapping = validMappings.find((m) => m.targetField?.key === "Title");
 
-  const mappingKey = validMappings.map((m) => `${m.sourceColumn}:${m.targetField?.key}`).join("|");
+  const mappingKey = [
+    ...validMappings.map((m) => `${m.sourceColumn}:${m.targetField?.key}`),
+    ...metafieldMappings.map((m) => `${m.sourceColumn}:meta`),
+  ].join("|");
 
   useEffect(() => {
     if (prevMappingsRef.current && prevMappingsRef.current !== mappingKey && flashRef.current) {
@@ -47,7 +51,7 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
     prevMappingsRef.current = mappingKey;
   }, [mappingKey]);
 
-  if (validMappings.length === 0 || previewRows.length === 0) {
+  if ((validMappings.length === 0 && metafieldMappings.length === 0) || previewRows.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
         <p
@@ -84,6 +88,15 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
                 {m.targetField!.key}
               </th>
             ))}
+            {metafieldMappings.map((m) => (
+              <th
+                key={`meta-${m.sourceColumn}`}
+                className="px-3 py-2 text-left whitespace-nowrap border-r border-[#2A2D3A] last:border-r-0"
+                style={{ color: "#96BF4880", fontFamily: "IBM Plex Mono, monospace", fontSize: "11px" }}
+              >
+                {toMetafieldKey(m.sourceColumn)}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -115,6 +128,28 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
                     style={{
                       color: hasError ? "#F5A623" : "#C8CADE",
                       backgroundColor: hasError ? "#F5A62312" : "transparent",
+                      fontFamily: "IBM Plex Mono, monospace",
+                      maxWidth: "160px",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={value}
+                  >
+                    {value || (
+                      <span style={{ color: "#4A4D5E" }}>—</span>
+                    )}
+                  </td>
+                );
+              })}
+              {metafieldMappings.map((m) => {
+                const value = String(row[m.sourceColumn] ?? "");
+                return (
+                  <td
+                    key={`meta-${m.sourceColumn}`}
+                    className="px-3 py-1.5 whitespace-nowrap border-r border-[#1A1D27] last:border-r-0 transition-colors"
+                    style={{
+                      color: "#96BF4899",
+                      backgroundColor: "#96BF4808",
                       fontFamily: "IBM Plex Mono, monospace",
                       maxWidth: "160px",
                       overflow: "hidden",

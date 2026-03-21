@@ -7,6 +7,20 @@ export interface MappingRow {
   confidence: number;
   isManual: boolean;
   hasWarning: boolean;
+  asMetafield: boolean;
+}
+
+/**
+ * Converts a source column name to a Shopify metafield column name.
+ * e.g. "Date of Birth" → "customer.metafields.custom.date_of_birth"
+ */
+export function toMetafieldKey(column: string): string {
+  const slug = column
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+  return `customer.metafields.custom.${slug}`;
 }
 
 // Simple fuzzy match using Fuse.js
@@ -42,6 +56,7 @@ export function autoMapColumns(sourceColumns: string[], fileType?: FileType): Ma
           confidence,
           isManual: false,
           hasWarning: confidence < 70,
+          asMetafield: false,
         };
       }
     }
@@ -52,6 +67,7 @@ export function autoMapColumns(sourceColumns: string[], fileType?: FileType): Ma
       confidence: 0,
       isManual: false,
       hasWarning: true,
+      asMetafield: false,
     };
   });
 }
@@ -95,8 +111,10 @@ export function validateMappings(mappings: MappingRow[], fileType?: FileType): {
     if (f === "Handle" && titleIsMapped) return false;
     return !mappedFieldKeys.includes(f);
   });
-  const mapped = mappings.filter((m) => m.targetField !== null).length;
-  const warnings = mappings.filter((m) => m.hasWarning && m.targetField !== null).length;
+  // Count: mapped = has a target field OR is marked as metafield
+  const mapped = mappings.filter((m) => m.targetField !== null || m.asMetafield).length;
+  // Warnings: has warning flag, has a target field, and is NOT a metafield
+  const warnings = mappings.filter((m) => m.hasWarning && m.targetField !== null && !m.asMetafield).length;
 
   return {
     mapped,

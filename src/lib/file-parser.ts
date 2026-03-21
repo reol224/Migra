@@ -1,4 +1,4 @@
-import { titleToHandle } from "@/lib/mapping-utils";
+import { titleToHandle, toMetafieldKey } from "@/lib/mapping-utils";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
@@ -256,10 +256,11 @@ async function parseExcel(file: File): Promise<ParsedFile> {
 
 export function exportToShopifyCsv(
   rows: Record<string, string>[],
-  mappings: { sourceColumn: string; targetField: { key: string } | null }[],
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
   fileType: FileType = "product"
 ): void {
   const validMappings = mappings.filter((m) => m.targetField !== null);
+  const metafieldMappings = mappings.filter((m) => m.targetField === null && m.asMetafield);
 
   // Find the Title source column for auto-generating Handle
   const titleMapping = validMappings.find((m) => m.targetField!.key === "Title");
@@ -281,12 +282,18 @@ export function exportToShopifyCsv(
   const canonicalOrder = fileType === "customer" ? CUSTOMER_COLUMN_ORDER : PRODUCT_COLUMN_ORDER;
 
   // Filter to only columns that are mapped, preserving canonical template order
-  const headers = canonicalOrder.filter((key) => mappingMap.has(key));
+  const shopifyHeaders = canonicalOrder.filter((key) => mappingMap.has(key));
 
-  // Build transformed rows using canonical order
+  // Build metafield headers: customer.custom.metafield.<slug>
+  const metafieldHeaders = metafieldMappings.map((m) => toMetafieldKey(m.sourceColumn));
+
+  const headers = [...shopifyHeaders, ...metafieldHeaders];
+
+  // Build transformed rows using canonical order + metafields
   const transformedRows = rows.map((row) => {
     const newRow: Record<string, string> = {};
-    headers.forEach((key) => {
+
+    shopifyHeaders.forEach((key) => {
       const sourceCol = mappingMap.get(key)!;
       let val = sanitizeText(row[sourceCol] || "");
 
@@ -304,6 +311,13 @@ export function exportToShopifyCsv(
 
       newRow[key] = val;
     });
+
+    // Append metafield columns
+    metafieldMappings.forEach((m, idx) => {
+      const metaKey = metafieldHeaders[idx];
+      newRow[metaKey] = sanitizeText(row[m.sourceColumn] || "");
+    });
+
     return newRow;
   });
 

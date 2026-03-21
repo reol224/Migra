@@ -105,7 +105,33 @@ function Home() {
               targetField: field,
               isManual: true,
               confidence: field ? 100 : 0,
-              hasWarning: field === null,
+              hasWarning: field === null && !row.asMetafield,
+              // Clear metafield when a proper field is selected
+              asMetafield: field !== null ? false : row.asMetafield,
+            };
+          });
+        });
+        return next;
+      });
+    },
+    [activeFileIndex]
+  );
+
+  const handleMetafieldToggle = useCallback(
+    (rowIndex: number) => {
+      setMappingsPerFile((prev) => {
+        const next = prev.map((fm, fi) => {
+          if (fi !== activeFileIndex) return fm;
+          return fm.map((row, ri) => {
+            if (ri !== rowIndex) return row;
+            const toggled = !row.asMetafield;
+            return {
+              ...row,
+              asMetafield: toggled,
+              // If turning on metafield, clear any target field and suppress warning
+              targetField: toggled ? null : row.targetField,
+              isManual: true,
+              hasWarning: !toggled && row.targetField === null,
             };
           });
         });
@@ -344,7 +370,7 @@ function Home() {
           </div>
 
           <div className="flex-1 min-h-0" style={{ background: "#0F1117", position: "relative" }}>
-            <MappingTable mappings={activeMappings} onMappingChange={handleMappingChange} fileType={activeFileType} />
+            <MappingTable mappings={activeMappings} onMappingChange={handleMappingChange} onMetafieldToggle={handleMetafieldToggle} fileType={activeFileType} />
           </div>
 
           {/* Preview Panel */}
