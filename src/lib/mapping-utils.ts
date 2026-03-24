@@ -300,6 +300,14 @@ const COLOUR_WORDS = new Set([
  */
 function isNumericSize(token: string): boolean {
   const cleaned = token.trim();
+
+  // Kids' youth sizes: e.g. 1Y, 2Y, 3Y, 13Y, 1.5Y, 2.5Y (case-insensitive)
+  const youthMatch = cleaned.match(/^(\d+(?:[.,]\d+)?)Y$/i);
+  if (youthMatch) {
+    const n = parseFloat(youthMatch[1].replace(",", "."));
+    if (!isNaN(n) && n >= 1 && n <= 13) return true;
+  }
+
   // Must look like a plain number (no extra alpha chars)
   if (!/^\d+([.,]\d+)?[½¾]?$/.test(cleaned)) return false;
 
@@ -325,7 +333,12 @@ function isNumericSize(token: string): boolean {
  * e.g. "105" → "10.5", "75" → "7.5", "80" → "8", "42" → "42"
  */
 function normalizeShoeSize(token: string): string {
-  const n = parseFloat(token.trim().replace(",", "."));
+  const cleaned = token.trim();
+  // Youth sizes (e.g. 1Y, 2.5Y) — pass through as-is but uppercase the Y
+  if (/^\d+(?:[.,]\d+)?Y$/i.test(cleaned)) {
+    return cleaned.toUpperCase();
+  }
+  const n = parseFloat(cleaned.replace(",", "."));
   if (isNaN(n) || !Number.isInteger(n)) return token;
   if (n >= 30 && n <= 200) {
     const decoded = n / 10;
