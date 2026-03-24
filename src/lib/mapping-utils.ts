@@ -141,12 +141,18 @@ export function autoMapColumns(sourceColumns: string[], fileType?: FileType): Ma
 /**
  * Converts a product title to a Shopify-style handle.
  * e.g. "FREEZE DRIED SKITTLES" → "freeze-dried-skittles"
+ *      "Nike Air Max 7W"       → "nike-air-max-7w"
+ *      "Jordan 1 Low 10.5W"    → "jordan-1-low-105w"
+ *      "Dunk Low 1Y"           → "dunk-low-1y"
+ *
+ * Size suffixes (W = women's, Y = youth, C = children's) are preserved as-is (lowercased).
+ * Decimal points are stripped (10.5 → 105) since dots are not URL-safe in handles.
  */
 export function titleToHandle(title: string): string {
   return title
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9\s-]/g, "")   // remove non-alphanumeric (keep spaces & hyphens)
+    .replace(/[^a-z0-9\s-]/g, "")   // remove non-alphanumeric (keep spaces, hyphens, letters, digits — preserves w/y size suffixes)
     .replace(/\s+/g, "-")            // spaces → hyphens
     .replace(/-+/g, "-")             // collapse multiple hyphens
     .replace(/^-|-$/g, "");          // trim leading/trailing hyphens
@@ -308,6 +314,20 @@ function isNumericSize(token: string): boolean {
     if (!isNaN(n) && n >= 1 && n <= 13) return true;
   }
 
+  // Children's sizes: e.g. 9C, 12.5C, 4C (case-insensitive)
+  const childrensMatch = cleaned.match(/^(\d+(?:[.,]\d+)?)C$/i);
+  if (childrensMatch) {
+    const n = parseFloat(childrensMatch[1].replace(",", "."));
+    if (!isNaN(n) && n >= 1 && n <= 13) return true;
+  }
+
+  // Women's sizes: e.g. 7W, 10.5W, 8.5W (case-insensitive)
+  const womensMatch = cleaned.match(/^(\d+(?:[.,]\d+)?)W$/i);
+  if (womensMatch) {
+    const n = parseFloat(womensMatch[1].replace(",", "."));
+    if (!isNaN(n) && n >= 4 && n <= 16) return true;
+  }
+
   // Must look like a plain number (no extra alpha chars)
   if (!/^\d+([.,]\d+)?[½¾]?$/.test(cleaned)) return false;
 
@@ -336,6 +356,14 @@ function normalizeShoeSize(token: string): string {
   const cleaned = token.trim();
   // Youth sizes (e.g. 1Y, 2.5Y) — pass through as-is but uppercase the Y
   if (/^\d+(?:[.,]\d+)?Y$/i.test(cleaned)) {
+    return cleaned.toUpperCase();
+  }
+  // Children's sizes (e.g. 9C, 12.5C) — pass through as-is but uppercase the C
+  if (/^\d+(?:[.,]\d+)?C$/i.test(cleaned)) {
+    return cleaned.toUpperCase();
+  }
+  // Women's sizes (e.g. 7W, 10.5W) — pass through as-is but uppercase the W
+  if (/^\d+(?:[.,]\d+)?W$/i.test(cleaned)) {
     return cleaned.toUpperCase();
   }
   const n = parseFloat(cleaned.replace(",", "."));
@@ -442,6 +470,14 @@ export function splitTitleSemantic(title: string): {
  *   "Nike Air Max 105"    → base="Nike Air Max",        tokens=["10.5"]
  *   "Nike Air Max Black"  → base="Nike Air Max Black",  tokens=[]
  *   "Air Force 1 White 9" → base="Air Force 1 White",   tokens=["9"]
+ *   "Nike Zoom 7W"        → base="Nike Zoom",           tokens=["7W"]   (women's)
+ *   "Jordan Low 10.5W"    → base="Jordan Low",          tokens=["10.5W"] (women's)
+ *   "Dunk Low 1Y"         → base="Dunk Low",            tokens=["1Y"]   (youth)
+ *   "Nike SB 9C"          → base="Nike SB",             tokens=["9C"]   (children's)
+ *   "Jordan 1 12.5C"      → base="Jordan 1",            tokens=["12.5C"] (children's)
+ *
+ * Handle for all size variants of "Nike Zoom" → "nike-zoom"
+ * Handle for standalone (non-split) title "Nike Zoom 7W" → "nike-zoom-7w"
  */
 export function splitTitleSneaker(title: string): {
   base: string;
