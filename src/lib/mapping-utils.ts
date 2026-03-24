@@ -15,9 +15,15 @@ export interface VariantConfig {
    */
   titleParsingMode?: boolean;
   /**
+   * Controls HOW the title is split when titleParsingMode is true:
+   *   "trailing"  – strip the last N words (original behaviour, default)
+   *   "semantic"  – detect size/colour tokens by value type and split there
+   */
+  titleSplitStrategy?: "trailing" | "semantic";
+  /**
    * The number of trailing words in the title that represent variant tokens.
    * e.g. "T-Shirt Blue S" with trailingWords=2 → base="T-Shirt", options=["Blue","S"]
-   * Defaults to auto-detected value when not set.
+   * Defaults to auto-detected value when not set.  Only used for "trailing" strategy.
    */
   titleVariantWordCount?: number;
   /**
@@ -30,6 +36,35 @@ export interface VariantConfig {
    * excluded from variant grouping and exported as standalone flat rows instead.
    */
   excludedRowIndices?: Set<number>;
+  /**
+   * Source column that holds the product/variant image URL.
+   * When set, Image Src is written on every variant row (not just the first)
+   * so each variant can carry its own image.
+   */
+  imageColumn?: string;
+  /**
+   * Source column that holds the image position number.
+   * Written alongside imageColumn when present.
+   */
+  imagePositionColumn?: string;
+  /**
+   * Source column that holds the variant-level image URL (Variant Image field).
+   * Written on every variant row.
+   */
+  variantImageColumn?: string;
+  /**
+   * Additional source columns that each hold a product image URL.
+   * Each column will produce one extra image-only row (Handle + Image Src + Image Position).
+   * Image positions are assigned in order: imageColumn=1, additionalImageColumns[0]=2, etc.
+   */
+  additionalImageColumns?: string[];
+  /**
+   * When true, activates "Sneaker Mode": a title is only split into a variant
+   * if the **last token** is a recognised numeric shoe size (including compressed
+   * encodings like 105 → 10.5).  Titles without a trailing numeric size are
+   * exported as standalone products (no variant rows).
+   */
+  sneakerMode?: boolean;
 }
 
 export interface MappingRow {
@@ -230,22 +265,288 @@ export function smartDetectVariantConfig(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Semantic title-variant detection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Known clothing/shoe size abbreviations (case-insensitive).
+ * These are treated as size tokens when found in a title.
+ */
+const SIZE_ABBREVS = new Set([
+  "xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "2xl", "3xl", "4xl", "5xl",
+  "one size", "os", "petite", "plus",
+]);
+
+/**
+ * Common colour keywords used in product titles.
+ */
+const COLOUR_WORDS = new Set([
+  "black","white","grey","gray","red","blue","green","yellow","orange","pink",
+  "purple","violet","brown","beige","cream","ivory","navy","khaki","olive",
+  "teal","cyan","magenta","gold","silver","bronze","rose","coral","indigo",
+  "charcoal","tan","burgundy","maroon","mint","lilac","lavender","mauve",
+  "off-white","off white","ecru","sand","camel","coffee","mocha","nude",
+  "multi","multicolor","multicolour","natural","neutral","clear","transparent",
+  // common compound colours
+  "black/white","white/black","red/black","blue/white","green/black",
+]);
+
+/**
+ * Returns true if the token is a numeric shoe/clothing size.
+ * Matches integers 1-60, halves (e.g. 42.5, 37½), and compressed
+ * shoe sizes where the decimal is encoded as an integer × 10
+ * (e.g. 105 → 10.5, 75 → 7.5, 115 → 11.5).
+ */
+function isNumericSize(token: string): boolean {
+  const cleaned = token.trim();
+  // Must look like a plain number (no extra alpha chars)
+  if (!/^\d+([.,]\d+)?[½¾]?$/.test(cleaned)) return false;
+
+  const n = parseFloat(cleaned.replace(",", ".").replace("½", ".5").replace("¾", ".75"));
+  if (isNaN(n)) return false;
+
+  // Standard sizes: 1–60
+  if (n >= 1 && n <= 60) return true;
+
+  // Compressed shoe-size encoding: integer × 10, where decoded value is 3–20
+  // e.g. 75 → 7.5, 80 → 8.0, 85 → 8.5, 100 → 10.0, 105 → 10.5, 115 → 11.5
+  if (Number.isInteger(n) && n >= 30 && n <= 200) {
+    const decoded = n / 10;
+    if (decoded >= 3 && decoded <= 20) return true;
+  }
+
+  return false;
+}
+
+/**
+ * If a size token looks like a compressed shoe size (integer × 10),
+ * return the decoded decimal string. Otherwise return the token as-is.
+ * e.g. "105" → "10.5", "75" → "7.5", "80" → "8", "42" → "42"
+ */
+function normalizeShoeSize(token: string): string {
+  const n = parseFloat(token.trim().replace(",", "."));
+  if (isNaN(n) || !Number.isInteger(n)) return token;
+  if (n >= 30 && n <= 200) {
+    const decoded = n / 10;
+    if (decoded >= 3 && decoded <= 20) {
+      // Return without trailing zero: 8.0 → "8", 10.5 → "10.5"
+      return decoded % 1 === 0 ? String(decoded) : decoded.toFixed(1);
+    }
+  }
+  return token;
+}
+
+/**
+ * Returns true if the token looks like a size (abbrev or numeric).
+ */
+function isSizeToken(token: string): boolean {
+  const t = token.toLowerCase().trim();
+  if (SIZE_ABBREVS.has(t)) return true;
+  if (isNumericSize(t)) return true;
+  return false;
+}
+
+/**
+ * Returns true if the token looks like a colour.
+ */
+function isColourToken(token: string): boolean {
+  return COLOUR_WORDS.has(token.toLowerCase().trim());
+}
+
+/**
+ * Semantically split a product title into base name + variant tokens.
+ *
+ * Strategy (Lightspeed / shoe-retail oriented):
+ *   1. Walk through each word token.
+ *   2. The first size OR colour token encountered marks the start of the
+ *      variant suffix — everything before it is the base product name,
+ *      everything from that point on is variant data.
+ *   3. Tokens are categorised as "Size" or "Color" based on their value.
+ *   4. If no semantic tokens are found, falls back to stripping the last word.
+ *
+ * Returns { base, variantTokens, optionTypes } where optionTypes is an array
+ * of human-readable labels for each token slot ("Size", "Color", "Option N").
+ */
+export function splitTitleSemantic(title: string): {
+  base: string;
+  variantTokens: string[];
+  optionTypes: string[];
+} {
+  const parts = title.trim().split(/\s+/);
+  if (parts.length < 2) return { base: title.trim(), variantTokens: [], optionTypes: [] };
+
+  let splitIndex = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (isSizeToken(parts[i]) || isColourToken(parts[i])) {
+      splitIndex = i;
+      break;
+    }
+  }
+
+  if (splitIndex <= 0) {
+    // No semantic signal found – keep the full title as-is, no variant tokens.
+    // We never strip words that aren't recognised size/colour tokens because
+    // arbitrary words (e.g. "Gum", "Natural") or parenthetical years (e.g.
+    // "(2016)") are part of the product name, not variant attributes.
+    return { base: title.trim(), variantTokens: [], optionTypes: [] };
+  }
+
+  const base = parts.slice(0, splitIndex).join(" ");
+  const rawVariantParts = parts.slice(splitIndex);
+
+  // Normalize compressed shoe sizes (e.g. "105" → "10.5") and label each token
+  const variantParts: string[] = [];
+  const optionTypes: string[] = [];
+  for (const token of rawVariantParts) {
+    if (isSizeToken(token)) {
+      variantParts.push(normalizeShoeSize(token));
+      optionTypes.push("Size");
+    } else if (isColourToken(token)) {
+      variantParts.push(token);
+      optionTypes.push("Color");
+    } else {
+      variantParts.push(token);
+      optionTypes.push("Option");
+    }
+  }
+
+  return { base, variantTokens: variantParts, optionTypes };
+}
+
+/**
+ * "Sneaker Mode" title splitter.
+ *
+ * A title is split into (base + size variant) ONLY when the **last token**
+ * is a recognised numeric shoe size (integers 1–60, halves, or compressed
+ * encodings like 105 → 10.5).  All other tokens (colours, model words, etc.)
+ * remain part of the base product name.
+ *
+ * If the last token is not a numeric size, the whole title is returned as the
+ * base with no variant tokens — the product is exported as a standalone item.
+ *
+ * Examples:
+ *   "Nike Air Max 105"    → base="Nike Air Max",        tokens=["10.5"]
+ *   "Nike Air Max Black"  → base="Nike Air Max Black",  tokens=[]
+ *   "Air Force 1 White 9" → base="Air Force 1 White",   tokens=["9"]
+ */
+export function splitTitleSneaker(title: string): {
+  base: string;
+  variantTokens: string[];
+  optionTypes: string[];
+} {
+  const parts = title.trim().split(/\s+/);
+  if (parts.length < 2) return { base: title.trim(), variantTokens: [], optionTypes: [] };
+
+  const lastToken = parts[parts.length - 1];
+
+  // Only treat as a variant if the last token is a numeric size
+  if (!isNumericSize(lastToken)) {
+    return { base: title.trim(), variantTokens: [], optionTypes: [] };
+  }
+
+  const base = parts.slice(0, parts.length - 1).join(" ");
+  const normalizedSize = normalizeShoeSize(lastToken);
+  return { base, variantTokens: [normalizedSize], optionTypes: ["Size"] };
+}
+
+/**
+ * Analyse a set of titles and detect whether semantic variant tokens
+ * (numeric sizes or colour words) appear consistently.
+ *
+ * Returns a confidence score and the dominant option type order
+ * (e.g. ["Size"] or ["Size", "Color"]).
+ */
+export function detectSemanticTitleVariants(
+  titles: string[]
+): {
+  detected: boolean;
+  confidence: number;
+  suggestedOptionTypes: string[];
+  suggestedWordCount: number;
+} {
+  const fallback = {
+    detected: false, confidence: 0,
+    suggestedOptionTypes: [] as string[], suggestedWordCount: 1,
+  };
+  if (titles.length < 2) return fallback;
+
+  const parsed = titles.map((t) => splitTitleSemantic(t));
+
+  // Count how many titles had at least one size/colour token found (not default "Variant")
+  const semanticHits = parsed.filter(
+    (p) => p.optionTypes.length > 0 && !p.optionTypes.every((t) => t === "Variant")
+  ).length;
+  const semanticRatio = semanticHits / parsed.length;
+
+  if (semanticRatio < 0.25) return fallback;
+
+  // Check that grouping works: bases repeat across rows
+  const bases = parsed.map((p) => p.base);
+  const uniqueBases = new Set(bases);
+  const repeatRatio = 1 - uniqueBases.size / bases.length;
+
+  if (repeatRatio < 0.1) return fallback;
+
+  // Determine dominant option type structure (most common token count)
+  const tokenCounts = parsed.map((p) => p.variantTokens.length);
+  const maxCount = Math.max(...tokenCounts);
+
+  // Collect type labels from the most common structure
+  const bestParsed = parsed.filter((p) => p.variantTokens.length === maxCount);
+  const suggestedOptionTypes: string[] = [];
+  for (let i = 0; i < maxCount; i++) {
+    const types = bestParsed.map((p) => p.optionTypes[i] ?? "Option");
+    // Most common type label for this slot
+    const freq = types.reduce<Record<string, number>>((acc, t) => {
+      acc[t] = (acc[t] ?? 0) + 1;
+      return acc;
+    }, {});
+    const dominant = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
+    suggestedOptionTypes.push(dominant);
+  }
+
+  const confidence = Math.min(
+    Math.round(semanticRatio * 50 + repeatRatio * 40 + 10),
+    96
+  );
+
+  return {
+    detected: true,
+    confidence,
+    suggestedOptionTypes,
+    suggestedWordCount: maxCount,
+  };
+}
+
 /**
  * Detects whether variants are encoded in the title column itself.
- * Looks for a set of rows where titles share a common prefix but differ
- * by trailing words (e.g. "T-Shirt Blue S" vs "T-Shirt Blue XL").
+ * First tries semantic detection (size/colour tokens), then falls back
+ * to trailing-word pattern matching.
  *
  * Returns:
  *   - detected: true if this pattern is found
  *   - titleColumn: the column most likely holding the titles
  *   - suggestedWordCount: how many trailing words to treat as variant tokens
+ *   - suggestedStrategy: "semantic" | "trailing"
+ *   - suggestedOptionTypes: human-readable labels for each option slot
  *   - confidence: 0–100
  */
 export function detectTitleEncodedVariants(
   columns: string[],
   rows: Record<string, string>[]
-): { detected: boolean; titleColumn: string; suggestedWordCount: number; confidence: number } {
-  const fallback = { detected: false, titleColumn: "", suggestedWordCount: 1, confidence: 0 };
+): {
+  detected: boolean;
+  titleColumn: string;
+  suggestedWordCount: number;
+  suggestedStrategy: "semantic" | "trailing";
+  suggestedOptionTypes: string[];
+  confidence: number;
+} {
+  const fallback = {
+    detected: false, titleColumn: "", suggestedWordCount: 1,
+    suggestedStrategy: "trailing" as const, suggestedOptionTypes: [] as string[], confidence: 0,
+  };
   if (rows.length < 2) return fallback;
 
   // Prefer columns named title/name/product/item
@@ -256,30 +557,47 @@ export function detectTitleEncodedVariants(
     const titles = rows.map((r) => String(r[col] ?? "").trim()).filter(Boolean);
     if (titles.length < 2) continue;
 
-    // Try stripping 1 or 2 trailing words and see if we get repeated base names
+    // ── Try semantic detection first ──────────────────────────────────────
+    const semantic = detectSemanticTitleVariants(titles);
+    if (semantic.detected && semantic.confidence >= 40) {
+      return {
+        detected: true,
+        titleColumn: col,
+        suggestedWordCount: semantic.suggestedWordCount,
+        suggestedStrategy: "semantic",
+        suggestedOptionTypes: semantic.suggestedOptionTypes,
+        confidence: semantic.confidence,
+      };
+    }
+
+    // ── Fall back to trailing-word pattern ────────────────────────────────
     for (const wordCount of [1, 2, 3]) {
       const bases = titles.map((t) => {
         const parts = t.split(/\s+/);
         return parts.slice(0, Math.max(1, parts.length - wordCount)).join(" ");
       });
       const unique = new Set(bases);
-      // We want some bases to repeat (indicates grouping)
       const repeatRatio = 1 - unique.size / bases.length;
       if (repeatRatio >= 0.3 && unique.size >= 1 && unique.size < bases.length) {
-        // Also check that the stripped tokens look like variant tokens (short, few unique values)
         const tokens = titles.map((t) => {
           const parts = t.split(/\s+/);
           return parts.slice(Math.max(0, parts.length - wordCount)).join(" ");
         });
         const uniqueTokens = new Set(tokens);
-        // Token diversity: should be low (few distinct values = few variant options)
         const tokenDiversity = uniqueTokens.size / tokens.length;
         if (tokenDiversity <= 0.8) {
           const confidence = Math.min(
             Math.round(repeatRatio * 60 + (1 - tokenDiversity) * 30 + 10),
             96
           );
-          return { detected: true, titleColumn: col, suggestedWordCount: wordCount, confidence };
+          return {
+            detected: true,
+            titleColumn: col,
+            suggestedWordCount: wordCount,
+            suggestedStrategy: "trailing",
+            suggestedOptionTypes: Array.from({ length: wordCount }, (_, i) => `Option ${i + 1}`),
+            confidence,
+          };
         }
       }
     }
@@ -290,12 +608,25 @@ export function detectTitleEncodedVariants(
 
 /**
  * Given a title string, split it into [baseName, ...variantTokens].
- * e.g. "T-Shirt Blue S" with wordCount=2 → ["T-Shirt", "Blue", "S"]
+ *
+ * When strategy is "semantic" (default for Lightspeed-style data):
+ *   Splits at the first size/colour token found.
+ *   e.g. "Nike Air Max 42 Black" → base="Nike Air Max", tokens=["42","Black"]
+ *
+ * When strategy is "trailing":
+ *   Strips the last N words (original behaviour).
+ *   e.g. "T-Shirt Blue S" with trailingWordCount=2 → base="T-Shirt", tokens=["Blue","S"]
  */
 export function splitTitleIntoBaseAndVariants(
   title: string,
-  trailingWordCount: number
+  trailingWordCount: number,
+  strategy: "trailing" | "semantic" = "trailing"
 ): { base: string; variantTokens: string[] } {
+  if (strategy === "semantic") {
+    const { base, variantTokens } = splitTitleSemantic(title);
+    return { base, variantTokens };
+  }
+  // trailing (original)
   const parts = title.trim().split(/\s+/);
   if (parts.length <= trailingWordCount) {
     return { base: title.trim(), variantTokens: [] };

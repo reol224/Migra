@@ -3,6 +3,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
 import type { VariantConfig } from "@/lib/mapping-utils";
+import { splitTitleSemantic, splitTitleSneaker } from "@/lib/mapping-utils";
 
 // ---------------------------------------------------------------------------
 // Country name → ISO 3166-1 alpha-2 lookup
@@ -369,10 +370,17 @@ export function applyVariantTransform(
     titleParsingMode,
     titleVariantWordCount = 1,
     titleColumn,
+    titleSplitStrategy = "trailing",
+    imageColumn,
+    imagePositionColumn,
+    variantImageColumn,
+    additionalImageColumns,
+    sneakerMode,
   } = variantConfig;
 
   // ── Title-parsing mode: variants are encoded in the title itself ──────────
   // e.g. "T-Shirt Blue S", "T-Shirt Blue XL" → base "T-Shirt", options ["Blue","S"]
+  // or Lightspeed: "Nike Air Max 42 Black" → base "Nike Air Max", options ["42","Black"]
   if (titleParsingMode) {
     return applyTitleParsingTransform(
       sourceRows,
@@ -382,7 +390,13 @@ export function applyVariantTransform(
       titleVariantWordCount,
       skuColumn,
       priceColumn,
-      inventoryColumn
+      inventoryColumn,
+      titleSplitStrategy,
+      imageColumn,
+      imagePositionColumn,
+      variantImageColumn,
+      additionalImageColumns,
+      sneakerMode
     );
   }
 
@@ -446,27 +460,64 @@ export function applyVariantTransform(
           }
           const isVariantLevel = variantOnlyCols.has(sourceCol)
             || targetKey.startsWith("Option")
-            || targetKey.startsWith("Variant");
+            || targetKey.startsWith("Variant")
+            // Image fields are written explicitly below (skip blanking them here)
+            || targetKey === "Image Src" || targetKey === "Image Position" || targetKey === "Image Alt Text";
           shopifyRow[targetKey] = isVariantLevel ? sanitizeText(variant[sourceCol] ?? "") : "";
         }
       }
 
       // ── Inject option names/values ──────────────────────────────────────
-      optionColumns.forEach((optCol, i) => {
-        const optNum = i + 1; // 1, 2, 3
-        if (idx === 0) {
-          // Option name only on first row
-          shopifyRow[`Option${optNum} Name`] = optCol;
-        }
-        shopifyRow[`Option${optNum} Value`] = sanitizeText(variant[optCol] ?? "");
-      });
+      if (optionColumns.length === 0 && idx === 0) {
+        // No option columns defined — emit Shopify's default single-variant convention
+        shopifyRow["Option1 Name"] = "Title";
+        shopifyRow["Option1 Value"] = "Default Title";
+      } else {
+        optionColumns.forEach((optCol, i) => {
+          const optNum = i + 1; // 1, 2, 3
+          if (idx === 0) {
+            // Option name only on first row
+            shopifyRow[`Option${optNum} Name`] = optCol;
+          }
+          shopifyRow[`Option${optNum} Value`] = sanitizeText(variant[optCol] ?? "");
+        });
+      }
 
       // ── Inject variant-level data (SKU, Price, Inventory) ───────────────
-      if (skuColumn) shopifyRow["Variant SKU"] = sanitizeText(variant[skuColumn] ?? "");
+      if (skuColumn) {
+        const rawSku = sanitizeText(variant[skuColumn] ?? "");
+        shopifyRow["Variant SKU"] = rawSku && /^\d+$/.test(rawSku) ? `'${rawSku}` : rawSku;
+      }
       if (priceColumn) shopifyRow["Variant Price"] = sanitizeText(variant[priceColumn] ?? "");
       if (inventoryColumn) shopifyRow["Variant Inventory Qty"] = sanitizeText(variant[inventoryColumn] ?? "");
 
+      // ── Primary image on the product/variant row ─────────────────────────
+      if (imageColumn) {
+        shopifyRow["Image Src"] = sanitizeText(variant[imageColumn] ?? "");
+        shopifyRow["Image Position"] = imagePositionColumn
+          ? sanitizeText(variant[imagePositionColumn] ?? "")
+          : idx === 0 ? "1" : "";
+      } else if (imagePositionColumn) {
+        shopifyRow["Image Position"] = sanitizeText(variant[imagePositionColumn] ?? "");
+      }
+      if (variantImageColumn) shopifyRow["Variant Image"] = sanitizeText(variant[variantImageColumn] ?? "");
+
       output.push(shopifyRow);
+
+      // ── Expand additional image columns into image-only rows ──────────────
+      if (idx === 0 && variantConfig.additionalImageColumns && variantConfig.additionalImageColumns.length > 0) {
+        let imgPosition = 2;
+        for (const imgCol of variantConfig.additionalImageColumns) {
+          const imgSrc = sanitizeText(variant[imgCol] ?? "");
+          if (!imgSrc) { imgPosition++; continue; }
+          output.push({
+            "Handle": handle,
+            "Image Src": imgSrc,
+            "Image Position": String(imgPosition),
+          });
+          imgPosition++;
+        }
+      }
     });
   }
 
@@ -490,7 +541,13 @@ function applyTitleParsingTransform(
   wordCount: number,
   skuColumn: string,
   priceColumn: string,
-  inventoryColumn: string
+  inventoryColumn: string,
+  splitStrategy: "trailing" | "semantic" = "trailing",
+  imageColumn?: string,
+  imagePositionColumn?: string,
+  variantImageColumn?: string,
+  additionalImageColumns?: string[],
+  sneakerMode?: boolean
 ): Record<string, string>[] {
   // Build targetKey → sourceColumn map
   const targetToSource = new Map<string, string>();
@@ -499,21 +556,37 @@ function applyTitleParsingTransform(
   });
 
   // Determine which targets are variant-level
-  const variantLevelTargets = new Set(["Variant SKU", "Variant Price", "Variant Inventory Qty",
+  const variantLevelTargets = new Set([
+    "Variant SKU", "Variant Price", "Variant Inventory Qty",
     "Option1 Name", "Option1 Value", "Option2 Name", "Option2 Value",
-    "Option3 Name", "Option3 Value"]);
+    "Option3 Name", "Option3 Value",
+    // Image fields are written explicitly below, skip here to avoid double-writing
+    "Image Src", "Image Position", "Image Alt Text", "Variant Image",
+  ]);
 
   const variantOnlyCols = new Set([skuColumn, priceColumn, inventoryColumn].filter(Boolean));
 
   // ── Parse & group rows ───────────────────────────────────────────────────
-  // Map: base title → array of { row, tokens }
-  const productGroups = new Map<string, { row: Record<string, string>; tokens: string[] }[]>();
+  // Map: base title → array of { row, tokens, optionTypes }
+  const productGroups = new Map<string, { row: Record<string, string>; tokens: string[]; optionTypes: string[] }[]>();
 
   for (const row of sourceRows) {
     const fullTitle = String(row[titleCol] ?? "").trim();
-    const { base, variantTokens } = splitTitleIntoBaseAndVariants(fullTitle, wordCount);
-    if (!productGroups.has(base)) productGroups.set(base, []);
-    productGroups.get(base)!.push({ row, tokens: variantTokens });
+    if (sneakerMode) {
+      // Sneaker Mode: only split if the last token is a numeric size.
+      // Titles without a trailing numeric size become standalone products.
+      const { base, variantTokens, optionTypes } = splitTitleSneaker(fullTitle);
+      if (!productGroups.has(base)) productGroups.set(base, []);
+      productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes });
+    } else if (splitStrategy === "semantic") {
+      const { base, variantTokens, optionTypes } = splitTitleSemantic(fullTitle);
+      if (!productGroups.has(base)) productGroups.set(base, []);
+      productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes });
+    } else {
+      const { base, variantTokens } = splitTitleIntoBaseAndVariants(fullTitle, wordCount, splitStrategy);
+      if (!productGroups.has(base)) productGroups.set(base, []);
+      productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes: [] });
+    }
   }
 
   // Infer option names from the first product group that has tokens
@@ -521,12 +594,22 @@ function applyTitleParsingTransform(
   //  the user specified custom option column names in variantConfig)
   const userOptionNames = variantConfig.optionColumns; // may be empty
 
+  // In semantic mode, build a canonical slot map: type label → slot index
+  // This is derived from userOptionNames (e.g. ["Color","Size"] → Color=0, Size=1).
+  // Tokens are then placed by type regardless of their position in the title.
+  const semanticSlotMap = new Map<string, number>();
+  if (splitStrategy === "semantic" && userOptionNames.length > 0) {
+    userOptionNames.forEach((name, i) => {
+      semanticSlotMap.set(name.trim(), i);
+    });
+  }
+
   const output: Record<string, string>[] = [];
 
   for (const [base, variants] of productGroups) {
     const handle = titleToHandle(base);
 
-    variants.forEach(({ row, tokens }, idx) => {
+    variants.forEach(({ row, tokens, optionTypes }, idx) => {
       const shopifyRow: Record<string, string> = {};
       shopifyRow["Handle"] = handle;
 
@@ -536,7 +619,7 @@ function applyTitleParsingTransform(
           if (targetKey === "Handle") {
             shopifyRow[targetKey] = handle;
           } else if (targetKey === "Title") {
-            // Override title with the base (stripped) product name
+            // Write base product name (full title when no semantic tokens found)
             shopifyRow[targetKey] = sanitizeText(base);
           } else {
             const isVariant = variantLevelTargets.has(targetKey)
@@ -562,27 +645,89 @@ function applyTitleParsingTransform(
       }
 
       // ── Inject parsed variant option values ──────────────────────────────
-      tokens.forEach((token, i) => {
-        const optNum = i + 1;
-        const optName = userOptionNames[i] || `Option ${optNum}`;
+      if (splitStrategy === "semantic" && semanticSlotMap.size > 0) {
+        // Place each token into the canonical slot defined by its type label.
+        // This normalises ordering even when Color is last in some titles and
+        // first (or absent) in others.
+        tokens.forEach((token, i) => {
+          const type = optionTypes[i] ?? "Option";
+          // Resolve slot: use canonical map if the type is known, else append
+          let slot = semanticSlotMap.get(type);
+          if (slot === undefined) {
+            // Unknown type — assign to the next unused slot beyond the known ones
+            slot = semanticSlotMap.size;
+          }
+          const optNum = slot + 1;
+          const optName = userOptionNames[slot] ?? type;
+          if (idx === 0) {
+            shopifyRow[`Option${optNum} Name`] = optName;
+          }
+          shopifyRow[`Option${optNum} Value`] = sanitizeText(token);
+        });
+        // Ensure all canonical slots have a Name on the first variant row
         if (idx === 0) {
-          shopifyRow[`Option${optNum} Name`] = optName;
+          userOptionNames.forEach((name, slot) => {
+            const optNum = slot + 1;
+            if (!shopifyRow[`Option${optNum} Name`]) {
+              shopifyRow[`Option${optNum} Name`] = name;
+            }
+          });
         }
-        shopifyRow[`Option${optNum} Value`] = sanitizeText(token);
-      });
+      } else {
+        tokens.forEach((token, i) => {
+          const optNum = i + 1;
+          const optName = userOptionNames[i] || `Option ${optNum}`;
+          if (idx === 0) {
+            shopifyRow[`Option${optNum} Name`] = optName;
+          }
+          shopifyRow[`Option${optNum} Value`] = sanitizeText(token);
+        });
+      }
 
       // Fill in any option slots without tokens (keep existing Name on first row)
       if (idx === 0 && tokens.length === 0) {
         shopifyRow["Option1 Name"] = "Title";
-        shopifyRow["Option1 Value"] = sanitizeText(base);
+        // Shopify convention: single-variant products use "Default Title" as the value
+        shopifyRow["Option1 Value"] = "Default Title";
       }
 
       // ── Variant-level data ────────────────────────────────────────────────
-      if (skuColumn) shopifyRow["Variant SKU"] = sanitizeText(row[skuColumn] ?? "");
+      if (skuColumn) {
+        const rawSku = sanitizeText(row[skuColumn] ?? "");
+        // Prefix purely-numeric SKUs with ' so Shopify treats them as text
+        shopifyRow["Variant SKU"] = rawSku && /^\d+$/.test(rawSku) ? `'${rawSku}` : rawSku;
+      }
       if (priceColumn) shopifyRow["Variant Price"] = sanitizeText(row[priceColumn] ?? "");
       if (inventoryColumn) shopifyRow["Variant Inventory Qty"] = sanitizeText(row[inventoryColumn] ?? "");
 
+      // ── Primary image on the product/variant row ──────────────────────────
+      if (imageColumn) {
+        const imgSrc = sanitizeText(row[imageColumn] ?? "");
+        shopifyRow["Image Src"] = imgSrc;
+        shopifyRow["Image Position"] = imagePositionColumn
+          ? sanitizeText(row[imagePositionColumn] ?? "")
+          : "1";
+      }
+      if (variantImageColumn) shopifyRow["Variant Image"] = sanitizeText(row[variantImageColumn] ?? "");
+
       output.push(shopifyRow);
+
+      // ── Expand additional image columns into image-only rows ──────────────
+      // Each extra image column produces one Shopify image row:
+      //   Handle, Image Src, Image Position — all other fields blank.
+      if (idx === 0 && additionalImageColumns && additionalImageColumns.length > 0) {
+        let imgPosition = 2; // primary image is position 1
+        for (const imgCol of additionalImageColumns) {
+          const imgSrc = sanitizeText(row[imgCol] ?? "");
+          if (!imgSrc) { imgPosition++; continue; }
+          output.push({
+            "Handle": handle,
+            "Image Src": imgSrc,
+            "Image Position": String(imgPosition),
+          });
+          imgPosition++;
+        }
+      }
     });
   }
 
