@@ -74,6 +74,32 @@ export interface VariantConfig {
   commaMode?: boolean;
 }
 
+/**
+ * Describes how to split a single source column's comma-delimited value
+ * into multiple Shopify target fields.
+ *
+ * e.g. a cell "506, Yarrow_Moonshine.jpg, TimberPine, ..."
+ * Part 0 → Image Src
+ * Part 1 → Image Alt Text
+ */
+export interface ColumnSplitPart {
+  /** 0-based index into the comma-split array */
+  partIndex: number;
+  /** Shopify target field key, or null if this part should be ignored */
+  targetFieldKey: string | null;
+  /** Human-readable label of the target field */
+  targetFieldLabel: string;
+}
+
+export interface ColumnSplitConfig {
+  /** The source column this split applies to */
+  sourceColumn: string;
+  /** Detected sample parts from the first non-empty cell (for UI display) */
+  sampleParts: string[];
+  /** User-defined assignments: which part → which Shopify field */
+  parts: ColumnSplitPart[];
+}
+
 export interface MappingRow {
   sourceColumn: string;
   targetField: ShopifyField | null;
@@ -81,6 +107,8 @@ export interface MappingRow {
   isManual: boolean;
   hasWarning: boolean;
   asMetafield: boolean;
+  /** When set, this column's value is split by comma and each part mapped separately */
+  splitConfig?: ColumnSplitConfig;
 }
 
 /**

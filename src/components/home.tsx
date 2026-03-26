@@ -9,6 +9,7 @@ import { FieldSidebar } from "@/components/FieldSidebar";
 import { DataPreview } from "@/components/DataPreview";
 import { ValidationBar } from "@/components/ValidationBar";
 import { VariantSetupModal, VariantConfig } from "@/components/VariantSetupModal";
+import { ColumnSplitModal } from "@/components/ColumnSplitModal";
 
 import { parseFile, exportToShopifyCsvWithVariants, ParsedFile } from "@/lib/file-parser";
 import {
@@ -16,6 +17,7 @@ import {
   MappingRow,
   validateMappings,
   detectVariantColumns,
+  ColumnSplitConfig,
 } from "@/lib/mapping-utils";
 import { ShopifyField, FileType } from "@/lib/shopify-fields";
 
@@ -37,6 +39,8 @@ function Home() {
   const [variantColumns, setVariantColumns] = useState<string[]>([]);
   const [variantConfigPerFile, setVariantConfigPerFile] = useState<(VariantConfig | null)[]>([]);
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
+  // Split column modal state
+  const [splitModalRowIndex, setSplitModalRowIndex] = useState<number | null>(null);
 
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
   const activeFile = files[activeFileIndex];
@@ -149,6 +153,30 @@ function Home() {
 
   const validation = validateMappings(activeMappings, activeFileType);
   const canExport = validation.errors === 0 && activeMappings.length > 0;
+
+  const handleSplitConfirm = useCallback(
+    (config: ColumnSplitConfig) => {
+      setMappingsPerFile((prev) => {
+        const next = prev.map((fm, fi) => {
+          if (fi !== activeFileIndex) return fm;
+          return fm.map((row) => {
+            if (row.sourceColumn !== config.sourceColumn) return row;
+            const hasParts = config.parts.some((p) => p.targetFieldKey);
+            return {
+              ...row,
+              splitConfig: hasParts ? config : undefined,
+              // If split is active, clear the single targetField to avoid double-mapping
+              targetField: hasParts ? null : row.targetField,
+              isManual: true,
+            };
+          });
+        });
+        return next;
+      });
+      setSplitModalRowIndex(null);
+    },
+    [activeFileIndex]
+  );
 
   const handleVariantConfirm = useCallback((config: VariantConfig) => {
     setVariantConfigPerFile((prev) => {
@@ -475,7 +503,14 @@ function Home() {
           </div>
 
           <div className="flex-1 min-h-0" style={{ background: "#0F1117", position: "relative" }}>
-            <MappingTable mappings={activeMappings} onMappingChange={handleMappingChange} onMetafieldToggle={handleMetafieldToggle} fileType={activeFileType} />
+            <MappingTable
+              mappings={activeMappings}
+              onMappingChange={handleMappingChange}
+              onMetafieldToggle={handleMetafieldToggle}
+              onSplitOpen={(rowIdx) => setSplitModalRowIndex(rowIdx)}
+              sampleRows={activeFile?.previewRows?.slice(0, 10)}
+              fileType={activeFileType}
+            />
           </div>
 
           {/* Preview Panel */}
@@ -556,6 +591,22 @@ function Home() {
           onConfirm={handleVariantConfirm}
         />
       )}
+
+      {splitModalRowIndex !== null && activeFile && activeMappings[splitModalRowIndex] && (() => {
+        const row = activeMappings[splitModalRowIndex];
+        const sampleVal = activeFile.previewRows.find((r) => r[row.sourceColumn])
+          ?.[row.sourceColumn] ?? "";
+        return (
+          <ColumnSplitModal
+            sourceColumn={row.sourceColumn}
+            sampleValue={sampleVal}
+            existingConfig={row.splitConfig}
+            fileType={activeFileType}
+            onClose={() => setSplitModalRowIndex(null)}
+            onConfirm={handleSplitConfirm}
+          />
+        );
+      })()}
 
       {/* File Type Selection Modal */}
       {pendingFile && (

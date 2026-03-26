@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, ChevronDown, Search, Database } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Search, Database, Scissors } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SHOPIFY_FIELDS, ShopifyField, FileType, getFieldsForType } from "@/lib/shopify-fields";
-import { MappingRow, toMetafieldKey } from "@/lib/mapping-utils";
+import { MappingRow, toMetafieldKey, ColumnSplitConfig } from "@/lib/mapping-utils";
 
 interface ConfidenceBadgeProps {
   confidence: number;
@@ -267,10 +267,13 @@ interface MappingTableProps {
   mappings: MappingRow[];
   onMappingChange: (index: number, field: ShopifyField | null) => void;
   onMetafieldToggle: (index: number) => void;
+  onSplitOpen?: (index: number) => void;
+  /** Sample rows for detecting comma-values in columns (checks all rows for presence of commas) */
+  sampleRows?: Record<string, string>[];
   fileType?: FileType;
 }
 
-export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, fileType }: MappingTableProps) {
+export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, onSplitOpen, sampleRows, fileType }: MappingTableProps) {
   const activeFields = fileType ? getFieldsForType(fileType) : SHOPIFY_FIELDS;
   const usedFieldKeys = new Set(
     mappings
@@ -301,7 +304,7 @@ export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, fil
       {/* Table Header */}
       <div
         className="grid gap-2 px-3 py-2 border-b border-[#2A2D3A] shrink-0"
-        style={{ gridTemplateColumns: "1fr 16px 1fr 64px 28px" }}
+        style={{ gridTemplateColumns: "1fr 16px 1fr 64px 28px 28px" }}
       >
         <span
           className="text-xs uppercase tracking-widest"
@@ -323,160 +326,247 @@ export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, fil
           Match
         </span>
         <span />
+        <span />
       </div>
 
       {/* Table Rows */}
       <div className="flex-1 overflow-y-auto">
-        {mappings.map((row, i) => (
-          <div
-            key={row.sourceColumn}
-            className="grid gap-2 px-3 py-2 border-b border-[#1A1D27] hover:bg-[#1A1D2740] transition-colors items-center"
-            style={{
-              gridTemplateColumns: "1fr 16px 1fr 64px 28px",
-              animation: `fadeSlideIn 0.2s ease forwards`,
-              animationDelay: `${i * 30}ms`,
-              opacity: 0,
-              backgroundColor: row.asMetafield ? "#1A1D2780" : undefined,
-            }}
-          >
-            {/* Source Column */}
-            <div className="flex items-center gap-2">
-              {row.asMetafield ? (
-                <Database size={12} style={{ color: "#96BF48" }} className="shrink-0" />
-              ) : row.hasWarning && !row.targetField ? (
-                <AlertTriangle size={12} style={{ color: "#F5A623" }} className="shrink-0" />
-              ) : row.targetField ? (
-                <Check size={12} style={{ color: "#96BF48" }} className="shrink-0" />
-              ) : null}
-              <div className="flex flex-col min-w-0">
-                <span
-                  className="text-xs truncate"
-                  style={{
-                    color: "#C8CADE",
-                    fontFamily: "IBM Plex Mono, monospace",
-                  }}
-                >
-                  {row.sourceColumn}
-                </span>
-                {row.asMetafield && (
+        {mappings.map((row, i) => {
+          // Detect if any sample row has comma-containing values in this column
+          const hasCommaValue = !!(sampleRows?.some((r) => {
+            const v = r[row.sourceColumn] ?? "";
+            return v.includes(",") && v.split(",").length >= 2;
+          }));
+          const hasSplit = !!(row.splitConfig && row.splitConfig.parts.some((p) => p.targetFieldKey));
+
+          return (
+            <div
+              key={row.sourceColumn}
+              className="grid gap-2 px-3 py-2 border-b border-[#1A1D27] hover:bg-[#1A1D2740] transition-colors items-center"
+              style={{
+                gridTemplateColumns: "1fr 16px 1fr 64px 28px 28px",
+                animation: `fadeSlideIn 0.2s ease forwards`,
+                animationDelay: `${i * 30}ms`,
+                opacity: 0,
+                backgroundColor: row.asMetafield ? "#1A1D2780" : hasSplit ? "#F5A62305" : undefined,
+              }}
+            >
+              {/* Source Column */}
+              <div className="flex items-center gap-2">
+                {row.asMetafield ? (
+                  <Database size={12} style={{ color: "#96BF48" }} className="shrink-0" />
+                ) : hasSplit ? (
+                  <Scissors size={12} style={{ color: "#F5A623" }} className="shrink-0" />
+                ) : row.hasWarning && !row.targetField ? (
+                  <AlertTriangle size={12} style={{ color: "#F5A623" }} className="shrink-0" />
+                ) : row.targetField ? (
+                  <Check size={12} style={{ color: "#96BF48" }} className="shrink-0" />
+                ) : null}
+                <div className="flex flex-col min-w-0">
                   <span
-                    className="text-xs truncate mt-0.5"
+                    className="text-xs truncate"
                     style={{
-                      color: "#96BF4880",
+                      color: "#C8CADE",
                       fontFamily: "IBM Plex Mono, monospace",
-                      fontSize: "10px",
                     }}
                   >
-                    {toMetafieldKey(row.sourceColumn)}
+                    {row.sourceColumn}
+                  </span>
+                  {row.asMetafield && (
+                    <span
+                      className="text-xs truncate mt-0.5"
+                      style={{
+                        color: "#96BF4880",
+                        fontFamily: "IBM Plex Mono, monospace",
+                        fontSize: "10px",
+                      }}
+                    >
+                      {toMetafieldKey(row.sourceColumn)}
+                    </span>
+                  )}
+                  {hasSplit && (
+                    <span
+                      className="text-xs truncate mt-0.5"
+                      style={{
+                        color: "#F5A62399",
+                        fontFamily: "IBM Plex Mono, monospace",
+                        fontSize: "10px",
+                      }}
+                    >
+                      {row.splitConfig!.parts.filter((p) => p.targetFieldKey).map((p) => p.targetFieldLabel).join(", ")}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Arrow */}
+              <span style={{ color: "#2A2D3A", fontSize: 14 }}>→</span>
+
+              {/* Target Field Dropdown — disabled if metafield or split */}
+              {row.asMetafield ? (
+                <div
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm border"
+                  style={{
+                    border: "1px solid #96BF4830",
+                    backgroundColor: "#96BF4808",
+                    opacity: 0.6,
+                  }}
+                >
+                  <span
+                    className="flex-1 text-xs truncate"
+                    style={{ color: "#96BF48", fontFamily: "IBM Plex Mono, monospace" }}
+                  >
+                    metafield
+                  </span>
+                </div>
+              ) : hasSplit ? (
+                <div
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm border"
+                  style={{
+                    border: "1px solid #F5A62340",
+                    backgroundColor: "#F5A62308",
+                  }}
+                >
+                  <Scissors size={10} style={{ color: "#F5A623", flexShrink: 0 }} />
+                  <span
+                    className="flex-1 text-xs truncate"
+                    style={{ color: "#F5A623", fontFamily: "IBM Plex Mono, monospace" }}
+                  >
+                    split → {row.splitConfig!.parts.filter((p) => p.targetFieldKey).length} fields
+                  </span>
+                </div>
+              ) : (
+                <FieldDropdown
+                  value={row.targetField}
+                  onChange={(field) => onMappingChange(i, field)}
+                  usedFieldKeys={usedFieldKeys}
+                  fields={activeFields}
+                />
+              )}
+
+              {/* Confidence / Status */}
+              <div className="flex justify-end">
+                {row.asMetafield ? (
+                  <span
+                    className="text-xs px-1.5 py-0.5 rounded-sm border"
+                    style={{
+                      color: "#96BF48",
+                      borderColor: "#96BF4840",
+                      backgroundColor: "#96BF4810",
+                      fontFamily: "IBM Plex Mono, monospace",
+                    }}
+                  >
+                    meta
+                  </span>
+                ) : hasSplit ? (
+                  <span
+                    className="text-xs px-1.5 py-0.5 rounded-sm border"
+                    style={{
+                      color: "#F5A623",
+                      borderColor: "#F5A62340",
+                      backgroundColor: "#F5A62310",
+                      fontFamily: "IBM Plex Mono, monospace",
+                    }}
+                  >
+                    split
+                  </span>
+                ) : row.targetField && row.confidence > 0 && !row.isManual ? (
+                  <ConfidenceBadge confidence={row.confidence} />
+                ) : row.isManual ? (
+                  <span
+                    className="text-xs px-1.5 py-0.5 rounded-sm border"
+                    style={{
+                      color: "#96BF48",
+                      borderColor: "#96BF4840",
+                      backgroundColor: "#96BF4810",
+                      fontFamily: "IBM Plex Mono, monospace",
+                    }}
+                  >
+                    manual
+                  </span>
+                ) : (
+                  <span
+                    className="text-xs px-1.5 py-0.5 rounded-sm border"
+                    style={{
+                      color: "#F5A623",
+                      borderColor: "#F5A62340",
+                      backgroundColor: "#F5A62310",
+                      fontFamily: "IBM Plex Mono, monospace",
+                    }}
+                  >
+                    none
                   </span>
                 )}
               </div>
-            </div>
 
-            {/* Arrow */}
-            <span style={{ color: "#2A2D3A", fontSize: 14 }}>→</span>
-
-            {/* Target Field Dropdown — disabled if metafield */}
-            {row.asMetafield ? (
-              <div
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm border"
-                style={{
-                  border: "1px solid #96BF4830",
-                  backgroundColor: "#96BF4808",
-                  opacity: 0.6,
-                }}
-              >
-                <span
-                  className="flex-1 text-xs truncate"
-                  style={{ color: "#96BF48", fontFamily: "IBM Plex Mono, monospace" }}
+              {/* Metafield Toggle Button */}
+              <div className="flex justify-center">
+                <button
+                  onClick={() => onMetafieldToggle(i)}
+                  title={row.asMetafield ? "Remove metafield" : "Keep as metafield"}
+                  className="rounded-sm border transition-all"
+                  style={{
+                    width: 22,
+                    height: 22,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: row.asMetafield ? "#96BF4820" : "transparent",
+                    borderColor: row.asMetafield ? "#96BF4860" : "#2A2D3A",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!row.asMetafield) e.currentTarget.style.borderColor = "#96BF4860";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!row.asMetafield) e.currentTarget.style.borderColor = "#2A2D3A";
+                  }}
                 >
-                  metafield
-                </span>
+                  <Database
+                    size={11}
+                    style={{ color: row.asMetafield ? "#96BF48" : "#4A4D5E" }}
+                  />
+                </button>
               </div>
-            ) : (
-              <FieldDropdown
-                value={row.targetField}
-                onChange={(field) => onMappingChange(i, field)}
-                usedFieldKeys={usedFieldKeys}
-                fields={activeFields}
-              />
-            )}
 
-            {/* Confidence / Status */}
-            <div className="flex justify-end">
-              {row.asMetafield ? (
-                <span
-                  className="text-xs px-1.5 py-0.5 rounded-sm border"
-                  style={{
-                    color: "#96BF48",
-                    borderColor: "#96BF4840",
-                    backgroundColor: "#96BF4810",
-                    fontFamily: "IBM Plex Mono, monospace",
-                  }}
-                >
-                  meta
-                </span>
-              ) : row.targetField && row.confidence > 0 && !row.isManual ? (
-                <ConfidenceBadge confidence={row.confidence} />
-              ) : row.isManual ? (
-                <span
-                  className="text-xs px-1.5 py-0.5 rounded-sm border"
-                  style={{
-                    color: "#96BF48",
-                    borderColor: "#96BF4840",
-                    backgroundColor: "#96BF4810",
-                    fontFamily: "IBM Plex Mono, monospace",
-                  }}
-                >
-                  manual
-                </span>
-              ) : (
-                <span
-                  className="text-xs px-1.5 py-0.5 rounded-sm border"
-                  style={{
-                    color: "#F5A623",
-                    borderColor: "#F5A62340",
-                    backgroundColor: "#F5A62310",
-                    fontFamily: "IBM Plex Mono, monospace",
-                  }}
-                >
-                  none
-                </span>
-              )}
+              {/* Split Column Button — only visible when comma value detected or split active */}
+              <div className="flex justify-center">
+                {(hasCommaValue || hasSplit) && onSplitOpen ? (
+                  <button
+                    onClick={() => onSplitOpen(i)}
+                    title={hasSplit ? "Edit column split" : "Split comma-separated values"}
+                    className="rounded-sm border transition-all"
+                    style={{
+                      width: 22,
+                      height: 22,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: hasSplit ? "#F5A62320" : "transparent",
+                      borderColor: hasSplit ? "#F5A62360" : "#2A2D3A",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!hasSplit) e.currentTarget.style.borderColor = "#F5A62360";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!hasSplit) e.currentTarget.style.borderColor = "#2A2D3A";
+                    }}
+                  >
+                    <Scissors
+                      size={11}
+                      style={{ color: hasSplit ? "#F5A623" : "#4A4D5E" }}
+                    />
+                  </button>
+                ) : (
+                  <span style={{ width: 22 }} />
+                )}
+              </div>
             </div>
-
-            {/* Metafield Toggle Button */}
-            <div className="flex justify-center">
-              <button
-                onClick={() => onMetafieldToggle(i)}
-                title={row.asMetafield ? "Remove metafield" : "Keep as metafield"}
-                className="rounded-sm border transition-all"
-                style={{
-                  width: 22,
-                  height: 22,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: row.asMetafield ? "#96BF4820" : "transparent",
-                  borderColor: row.asMetafield ? "#96BF4860" : "#2A2D3A",
-                  cursor: "pointer",
-                  flexShrink: 0,
-                }}
-                onMouseEnter={(e) => {
-                  if (!row.asMetafield) e.currentTarget.style.borderColor = "#96BF4860";
-                }}
-                onMouseLeave={(e) => {
-                  if (!row.asMetafield) e.currentTarget.style.borderColor = "#2A2D3A";
-                }}
-              >
-                <Database
-                  size={11}
-                  style={{ color: row.asMetafield ? "#96BF48" : "#4A4D5E" }}
-                />
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <style>{`

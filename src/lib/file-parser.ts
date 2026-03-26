@@ -2,7 +2,7 @@ import { titleToHandle, toMetafieldKey, splitTitleIntoBaseAndVariants } from "@/
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
-import type { VariantConfig } from "@/lib/mapping-utils";
+import type { VariantConfig, ColumnSplitConfig } from "@/lib/mapping-utils";
 import { splitTitleSemantic, splitTitleSneaker, splitTitleComma } from "@/lib/mapping-utils";
 
 // ---------------------------------------------------------------------------
@@ -355,11 +355,12 @@ async function parseExcel(
 
 export function exportToShopifyCsv(
   rows: Record<string, string>[],
-  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean; splitConfig?: ColumnSplitConfig }[],
   fileType: FileType = "product"
 ): void {
-  const validMappings = mappings.filter((m) => m.targetField !== null);
-  const metafieldMappings = mappings.filter((m) => m.targetField === null && m.asMetafield);
+  const validMappings = mappings.filter((m) => m.targetField !== null && !m.splitConfig);
+  const splitMappings = mappings.filter((m) => m.splitConfig && m.splitConfig.parts.some((p) => p.targetFieldKey));
+  const metafieldMappings = mappings.filter((m) => m.targetField === null && m.asMetafield && !m.splitConfig);
 
   // Find the Title source column for auto-generating Handle
   const titleMapping = validMappings.find((m) => m.targetField!.key === "Title");
@@ -377,6 +378,16 @@ export function exportToShopifyCsv(
     mappingMap.set("Handle", titleMapping.sourceColumn);
   }
 
+  // Expand split configs into mappingMap entries (each part → its target field)
+  for (const sm of splitMappings) {
+    for (const part of sm.splitConfig!.parts) {
+      if (part.targetFieldKey) {
+        // Store as "sourceColumn::partIndex" so we can look it up
+        mappingMap.set(part.targetFieldKey, `${sm.sourceColumn}::${part.partIndex}`);
+      }
+    }
+  }
+
   // Determine canonical column order based on file type
   const canonicalOrder = fileType === "customer" ? CUSTOMER_COLUMN_ORDER : PRODUCT_COLUMN_ORDER;
 
@@ -388,18 +399,29 @@ export function exportToShopifyCsv(
 
   const headers = [...shopifyHeaders, ...metafieldHeaders];
 
+  // Helper to resolve a value from mappingMap (handles split syntax "col::partIdx")
+  function resolveValue(sourceRef: string, row: Record<string, string>): string {
+    if (sourceRef.includes("::")) {
+      const [col, idxStr] = sourceRef.split("::");
+      const partIdx = parseInt(idxStr, 10);
+      const cellVal = row[col] ?? "";
+      const parts = cellVal.split(",").map((p) => p.trim());
+      return sanitizeText(parts[partIdx] ?? "");
+    }
+    return sanitizeText(row[sourceRef] ?? "");
+  }
+
   // Build transformed rows using canonical order + metafields
   const transformedRows = rows.map((row) => {
     const newRow: Record<string, string> = {};
 
     shopifyHeaders.forEach((key) => {
-      const sourceCol = mappingMap.get(key)!;
-      let val = sanitizeText(row[sourceCol] || "");
+      const sourceRef = mappingMap.get(key)!;
+      let val = resolveValue(sourceRef, row);
 
       if (key === "Handle") {
         val = val ? titleToHandle(val) : "";
-        // If Handle maps to same column as Title, generate from title value
-        if (!val && titleMapping && sourceCol === titleMapping.sourceColumn) {
+        if (!val && titleMapping && sourceRef === titleMapping.sourceColumn) {
           val = titleToHandle(row[titleMapping.sourceColumn] || "");
         }
       }
@@ -438,6 +460,21 @@ export function exportToShopifyCsv(
 // Variant transformation — converts flat/tall source rows into Shopify's
 // multi-row-per-product format (one parent row + N child variant rows).
 // ---------------------------------------------------------------------------
+
+/**
+ * Reads a value from a row, supporting the "col::partIdx" virtual column
+ * syntax produced by expandSplitMappings for split-config columns.
+ */
+function getColVal(row: Record<string, string>, sourceCol: string): string {
+  if (sourceCol.includes("::")) {
+    const [col, idxStr] = sourceCol.split("::");
+    const partIdx = parseInt(idxStr, 10);
+    const cell = row[col] ?? "";
+    const parts = cell.split(",").map((p) => p.trim());
+    return parts[partIdx] ?? "";
+  }
+  return row[sourceCol] ?? "";
+}
 
 /**
  * Takes flat source rows (one row per variant) and transforms them into
@@ -546,7 +583,7 @@ export function applyVariantTransform(
           if (targetKey === "Handle") {
             shopifyRow[targetKey] = handle;
           } else {
-            shopifyRow[targetKey] = sanitizeText(variant[sourceCol] ?? "");
+            shopifyRow[targetKey] = sanitizeText(getColVal(variant, sourceCol));
           }
         }
       } else {
@@ -562,7 +599,7 @@ export function applyVariantTransform(
             || targetKey.startsWith("Variant")
             // Image fields are written explicitly below (skip blanking them here)
             || targetKey === "Image Src" || targetKey === "Image Position" || targetKey === "Image Alt Text";
-          shopifyRow[targetKey] = isVariantLevel ? sanitizeText(variant[sourceCol] ?? "") : "";
+          shopifyRow[targetKey] = isVariantLevel ? sanitizeText(getColVal(variant, sourceCol)) : "";
         }
       }
 
@@ -732,7 +769,7 @@ function applyTitleParsingTransform(
               || variantOnlyCols.has(sourceCol)
               || targetKey.startsWith("Option")
               || targetKey.startsWith("Variant");
-            shopifyRow[targetKey] = isVariant ? "" : sanitizeText(row[sourceCol] ?? "");
+            shopifyRow[targetKey] = isVariant ? "" : sanitizeText(getColVal(row, sourceCol));
           }
         }
       } else {
@@ -746,7 +783,7 @@ function applyTitleParsingTransform(
             || variantOnlyCols.has(sourceCol)
             || targetKey.startsWith("Option")
             || targetKey.startsWith("Variant");
-          shopifyRow[targetKey] = isVariant ? sanitizeText(row[sourceCol] ?? "") : "";
+          shopifyRow[targetKey] = isVariant ? sanitizeText(getColVal(row, sourceCol)) : "";
         }
       }
 
@@ -847,7 +884,7 @@ function applyTitleParsingTransform(
  */
 export function exportToShopifyCsvWithVariants(
   rows: Record<string, string>[],
-  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean; splitConfig?: ColumnSplitConfig }[],
   fileType: FileType = "product",
   variantConfig?: VariantConfig | null
 ): void {
@@ -857,7 +894,10 @@ export function exportToShopifyCsvWithVariants(
     return;
   }
 
-  const transformedRows = applyVariantTransform(rows, mappings, variantConfig, fileType);
+  // Expand split configs before variant transform: treat each split part as its own mapping row
+  const expandedMappings = expandSplitMappings(mappings);
+
+  const transformedRows = applyVariantTransform(rows, expandedMappings, variantConfig, fileType);
 
   // Collect all keys that appear in the transformed rows (maintain Shopify order)
   const canonicalOrder = SHOPIFY_PRODUCT_FIELDS.map((f) => f.key);
@@ -880,4 +920,30 @@ export function exportToShopifyCsvWithVariants(
   a.download = "shopify_products.csv";
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Expands split-config mapping rows into individual rows, one per assigned part.
+ * Split parts reference a virtual source column "originalCol::partIdx" so that
+ * the transform functions can extract the correct comma-split value.
+ */
+function expandSplitMappings(
+  mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean; splitConfig?: ColumnSplitConfig }[]
+): { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[] {
+  const result: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[] = [];
+  for (const m of mappings) {
+    if (m.splitConfig && m.splitConfig.parts.some((p) => p.targetFieldKey)) {
+      for (const part of m.splitConfig.parts) {
+        if (part.targetFieldKey) {
+          result.push({
+            sourceColumn: `${m.sourceColumn}::${part.partIndex}`,
+            targetField: { key: part.targetFieldKey },
+          });
+        }
+      }
+    } else {
+      result.push(m);
+    }
+  }
+  return result;
 }
