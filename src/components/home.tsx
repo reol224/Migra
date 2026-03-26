@@ -30,6 +30,7 @@ function Home() {
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [mappingsPerFile, setMappingsPerFile] = useState<MappingRow[][]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [parseProgress, setParseProgress] = useState<{ pct: number; rows: number; fileName: string } | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(true);
   const [showVariantModal, setShowVariantModal] = useState(false);
@@ -58,7 +59,11 @@ function Home() {
     setIsLoading(true);
     try {
       for (const f of newFiles) {
-        const p = await parseFile(f);
+        setParseProgress({ pct: 0, rows: 0, fileName: f.name });
+        const p = await parseFile(f, (pct, rows) => {
+          setParseProgress({ pct, rows, fileName: f.name });
+        });
+        setParseProgress(null);
         const type = await askFileType(p);
 
         setFiles((prev) => {
@@ -79,6 +84,7 @@ function Home() {
         }
       }
     } catch (err: unknown) {
+      setParseProgress(null);
       toast.error(err instanceof Error ? err.message : "Failed to parse file");
     } finally {
       setIsLoading(false);
@@ -188,6 +194,55 @@ function Home() {
         ::-webkit-scrollbar-thumb:hover { background: #3A3D4A; }
       `}</style>
 
+      {/* Parse progress overlay */}
+      {parseProgress && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(15,17,23,0.85)", backdropFilter: "blur(4px)" }}
+        >
+          <div
+            className="flex flex-col gap-4 p-8 rounded-sm border"
+            style={{ background: "#1A1D27", borderColor: "#2A2D3A", minWidth: 320 }}
+          >
+            <p
+              className="text-sm font-semibold uppercase tracking-widest"
+              style={{ color: "#C8CADE", fontFamily: "Syne, sans-serif" }}
+            >
+              Parsing file
+            </p>
+            <p
+              className="text-xs truncate"
+              style={{ color: "#6B7280", maxWidth: 280 }}
+            >
+              {parseProgress.fileName}
+            </p>
+            {/* Progress bar */}
+            <div
+              className="w-full rounded-sm overflow-hidden"
+              style={{ height: 4, background: "#2A2D3A" }}
+            >
+              <div
+                className="h-full rounded-sm transition-all duration-200"
+                style={{
+                  width: `${parseProgress.pct}%`,
+                  background: "#96BF48",
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs" style={{ color: "#96BF48" }}>
+                {parseProgress.pct}%
+              </span>
+              {parseProgress.rows > 0 && (
+                <span className="text-xs" style={{ color: "#6B7280" }}>
+                  {parseProgress.rows.toLocaleString()} rows loaded
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Bar */}
       <header
         className="flex items-center justify-between px-5 py-3 border-b shrink-0"
@@ -295,7 +350,7 @@ function Home() {
             onFilesAccepted={handleFilesAccepted}
             uploadedFiles={files}
             onRemoveFile={handleRemoveFile}
-            isLoading={isLoading}
+            isLoading={isLoading && !parseProgress}
           />
 
           {activeFile && (
@@ -458,7 +513,7 @@ function Home() {
             </button>
             {previewOpen && (
               <div className="flex-1 overflow-hidden">
-                <DataPreview rows={activeFile?.rows || []} mappings={activeMappings} />
+                <DataPreview rows={activeFile?.previewRows || []} mappings={activeMappings} />
               </div>
             )}
           </div>
@@ -496,7 +551,7 @@ function Home() {
         <VariantSetupModal
           columns={activeFile.headers}
           variantColumns={variantColumns}
-          rows={activeFile.rows}
+          rows={activeFile.previewRows}
           onClose={() => setShowVariantModal(false)}
           onConfirm={handleVariantConfirm}
         />

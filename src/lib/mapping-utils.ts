@@ -65,6 +65,13 @@ export interface VariantConfig {
    * exported as standalone products (no variant rows).
    */
   sneakerMode?: boolean;
+  /**
+   * When true, activates "Comma Mode": the title column contains a value like
+   * "Monstera Deliciosa, 4\" Pot" where everything before the first comma is
+   * the base product name and everything after is the variant value.
+   * e.g. "Monstera Deliciosa, 4\" Pot" → base="Monstera Deliciosa", variant=["4\" Pot"]
+   */
+  commaMode?: boolean;
 }
 
 export interface MappingRow {
@@ -497,6 +504,34 @@ export function splitTitleSneaker(title: string): {
   const base = parts.slice(0, parts.length - 1).join(" ");
   const normalizedSize = normalizeShoeSize(lastToken);
   return { base, variantTokens: [normalizedSize], optionTypes: ["Size"] };
+}
+
+/**
+ * Comma Mode: split a title on the first comma.
+ * Everything before the comma is the base product name.
+ * Everything after the comma (trimmed) is the variant value.
+ *
+ * Examples:
+ *   "Monstera Deliciosa, 4\" Pot"  → base="Monstera Deliciosa", variantTokens=["4\" Pot"]
+ *   "Fiddle Leaf Fig, Large"       → base="Fiddle Leaf Fig",     variantTokens=["Large"]
+ *   "Snake Plant"                  → base="Snake Plant",          variantTokens=[]  (no comma → standalone)
+ */
+export function splitTitleComma(title: string): {
+  base: string;
+  variantTokens: string[];
+  optionTypes: string[];
+} {
+  const idx = title.indexOf(",");
+  if (idx === -1) {
+    // No comma — treat as standalone product with no variant
+    return { base: title.trim(), variantTokens: [], optionTypes: [] };
+  }
+  const base = title.slice(0, idx).trim();
+  const variant = title.slice(idx + 1).trim();
+  if (!variant) {
+    return { base: base, variantTokens: [], optionTypes: [] };
+  }
+  return { base, variantTokens: [variant], optionTypes: ["Variant"] };
 }
 
 /**

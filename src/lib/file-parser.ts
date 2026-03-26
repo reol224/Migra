@@ -3,7 +3,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
 import type { VariantConfig } from "@/lib/mapping-utils";
-import { splitTitleSemantic, splitTitleSneaker } from "@/lib/mapping-utils";
+import { splitTitleSemantic, splitTitleSneaker, splitTitleComma } from "@/lib/mapping-utils";
 
 // ---------------------------------------------------------------------------
 // Country name → ISO 3166-1 alpha-2 lookup
@@ -206,34 +206,77 @@ export interface ParsedFile {
   name: string;
   rowCount: number;
   headers: string[];
+  /** Full dataset — used only for export */
   rows: Record<string, string>[];
+  /** First 50 rows — used for UI previews and variant detection */
+  previewRows: Record<string, string>[];
 }
 
-export async function parseFile(file: File): Promise<ParsedFile> {
+export type ParseProgressCallback = (pct: number, rowsLoaded: number) => void;
+
+export async function parseFile(
+  file: File,
+  onProgress?: ParseProgressCallback
+): Promise<ParsedFile> {
   const ext = file.name.split(".").pop()?.toLowerCase();
 
   if (ext === "csv") {
-    return parseCsv(file);
+    return parseCsv(file, onProgress);
   } else if (ext === "xlsx" || ext === "xls") {
-    return parseExcel(file);
+    return parseExcel(file, onProgress);
   }
 
   throw new Error("Unsupported file format. Please upload a CSV or Excel file.");
 }
 
-function parseCsv(file: File): Promise<ParsedFile> {
+/**
+ * Returns true if a row is "ghost" — every cell is empty or whitespace-only.
+ */
+function isGhostRow(row: Record<string, string>, headers: string[]): boolean {
+  return headers.every((h) => (row[h] ?? "").toString().trim() === "");
+}
+
+function parseCsv(
+  file: File,
+  onProgress?: ParseProgressCallback
+): Promise<ParsedFile> {
   return new Promise((resolve, reject) => {
-    Papa.parse(file, {
+    const allRows: Record<string, string>[] = [];
+    let headers: string[] = [];
+    const fileSize = file.size;
+
+    Papa.parse<Record<string, string>>(file, {
       header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const rows = results.data as Record<string, string>[];
-        const headers = results.meta.fields || [];
+      // "greedy" skips lines that are entirely empty or contain only delimiters
+      skipEmptyLines: "greedy",
+      worker: false,
+      chunk: (results, _parser) => {
+        if (headers.length === 0 && results.meta.fields) {
+          headers = results.meta.fields;
+        }
+        for (const row of results.data) {
+          if (!isGhostRow(row, headers)) {
+            allRows.push(row);
+          }
+        }
+        if (onProgress && fileSize > 0) {
+          // Heuristic: estimate progress from row count vs estimated total
+          const estimatedTotal = Math.max(fileSize / 80, allRows.length + 1);
+          const pct = Math.min(95, Math.round((allRows.length / estimatedTotal) * 100));
+          onProgress(pct, allRows.length);
+        }
+      },
+      complete: () => {
+        // Apply ghost row + ghost column cleanup (same as Excel path)
+        const { headers: cleanHeaders, rows: cleanRows } = removeGhostData(headers, allRows);
+        onProgress?.(100, cleanRows.length);
+        const previewRows = cleanRows.slice(0, 50);
         resolve({
           name: file.name,
-          rowCount: rows.length,
-          headers,
-          rows,
+          rowCount: cleanRows.length,
+          headers: cleanHeaders,
+          rows: cleanRows,
+          previewRows,
         });
       },
       error: reject,
@@ -241,18 +284,72 @@ function parseCsv(file: File): Promise<ParsedFile> {
   });
 }
 
-async function parseExcel(file: File): Promise<ParsedFile> {
+/**
+ * Removes ghost rows and ghost columns from any parsed tabular dataset.
+ *
+ * Ghost ROWS  — every cell in the row is empty/whitespace (stray blank lines,
+ *               Excel extended used-range, CSV trailing newlines, etc.)
+ * Ghost COLUMNS — the header is blank OR matches auto-generated patterns
+ *                 (__EMPTY, __EMPTY_1, Column1, etc.) AND every data cell in
+ *                 that column is also empty.  Named columns that happen to be
+ *                 all-empty are kept — only headerless/auto-named empties are
+ *                 removed.
+ *
+ * Works for both CSV and Excel input.
+ */
+function removeGhostData(
+  rawHeaders: string[],
+  rawRows: Record<string, string>[]
+): { headers: string[]; rows: Record<string, string>[] } {
+  // ── 1. Drop all-empty rows ─────────────────────────────────────────────────
+  const trimmedRows = rawRows.filter(
+    (row) => rawHeaders.some((h) => (row[h] ?? "").toString().trim() !== "")
+  );
+
+  // ── 2. Drop ghost columns ──────────────────────────────────────────────────
+  // Keep a column only if at least one row has a non-empty value in it.
+  // This removes both:
+  //   • Auto-named blank columns (__EMPTY, Column1, blank header, etc.)
+  //   • Real-named columns that are entirely empty across all rows
+  const cleanHeaders = rawHeaders.filter((header) =>
+    trimmedRows.some((row) => (row[header] ?? "").toString().trim() !== "")
+  );
+
+  // ── 3. Re-project rows to only include surviving headers ───────────────────
+  const cleanRows = trimmedRows.map((row) => {
+    const out: Record<string, string> = {};
+    cleanHeaders.forEach((h) => { out[h] = row[h] ?? ""; });
+    return out;
+  });
+
+  return { headers: cleanHeaders, rows: cleanRows };
+}
+
+async function parseExcel(
+  file: File,
+  onProgress?: ParseProgressCallback
+): Promise<ParsedFile> {
+  onProgress?.(10, 0);
   const buffer = await file.arrayBuffer();
+  onProgress?.(40, 0);
   const wb = XLSX.read(buffer, { type: "array" });
+  onProgress?.(70, 0);
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const data = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
-  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const rawData = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
+  const rawHeaders = rawData.length > 0 ? Object.keys(rawData[0]) : [];
+
+  onProgress?.(85, rawData.length);
+  const { headers, rows } = removeGhostData(rawHeaders, rawData);
+  onProgress?.(100, rows.length);
+
+  const previewRows = rows.slice(0, 50);
 
   return {
     name: file.name,
-    rowCount: data.length,
+    rowCount: rows.length,
     headers,
-    rows: data,
+    rows,
+    previewRows,
   };
 }
 
@@ -376,6 +473,7 @@ export function applyVariantTransform(
     variantImageColumn,
     additionalImageColumns,
     sneakerMode,
+    commaMode,
   } = variantConfig;
 
   // ── Title-parsing mode: variants are encoded in the title itself ──────────
@@ -396,7 +494,8 @@ export function applyVariantTransform(
       imagePositionColumn,
       variantImageColumn,
       additionalImageColumns,
-      sneakerMode
+      sneakerMode,
+      commaMode
     );
   }
 
@@ -547,7 +646,8 @@ function applyTitleParsingTransform(
   imagePositionColumn?: string,
   variantImageColumn?: string,
   additionalImageColumns?: string[],
-  sneakerMode?: boolean
+  sneakerMode?: boolean,
+  commaMode?: boolean
 ): Record<string, string>[] {
   // Build targetKey → sourceColumn map
   const targetToSource = new Map<string, string>();
@@ -576,6 +676,12 @@ function applyTitleParsingTransform(
       // Sneaker Mode: only split if the last token is a numeric size.
       // Titles without a trailing numeric size become standalone products.
       const { base, variantTokens, optionTypes } = splitTitleSneaker(fullTitle);
+      if (!productGroups.has(base)) productGroups.set(base, []);
+      productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes });
+    } else if (commaMode) {
+      // Comma Mode: split on the first comma — left=base, right=variant value.
+      // Titles without a comma become standalone products.
+      const { base, variantTokens, optionTypes } = splitTitleComma(fullTitle);
       if (!productGroups.has(base)) productGroups.set(base, []);
       productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes });
     } else if (splitStrategy === "semantic") {
