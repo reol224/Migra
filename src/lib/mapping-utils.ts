@@ -542,6 +542,7 @@ export function splitTitleSneaker(title: string): {
  * Examples:
  *   "Monstera Deliciosa, 4\" Pot"  → base="Monstera Deliciosa", variantTokens=["4\" Pot"]
  *   "Fiddle Leaf Fig, Large"       → base="Fiddle Leaf Fig",     variantTokens=["Large"]
+ *   "Shirt, Blue, S"               → base="Shirt",               variantTokens=["Blue", "S"]
  *   "Snake Plant"                  → base="Snake Plant",          variantTokens=[]  (no comma → standalone)
  */
 export function splitTitleComma(title: string): {
@@ -549,17 +550,15 @@ export function splitTitleComma(title: string): {
   variantTokens: string[];
   optionTypes: string[];
 } {
-  const idx = title.indexOf(",");
-  if (idx === -1) {
+  const parts = title.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length <= 1) {
     // No comma — treat as standalone product with no variant
     return { base: title.trim(), variantTokens: [], optionTypes: [] };
   }
-  const base = title.slice(0, idx).trim();
-  const variant = title.slice(idx + 1).trim();
-  if (!variant) {
-    return { base: base, variantTokens: [], optionTypes: [] };
-  }
-  return { base, variantTokens: [variant], optionTypes: ["Variant"] };
+  const base = parts[0];
+  const variantTokens = parts.slice(1);
+  const optionTypes = variantTokens.map((_, i) => `Option ${i + 1}`);
+  return { base, variantTokens, optionTypes };
 }
 
 /**
