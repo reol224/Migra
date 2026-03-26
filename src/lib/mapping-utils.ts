@@ -72,6 +72,24 @@ export interface VariantConfig {
    * e.g. "Monstera Deliciosa, 4\" Pot" → base="Monstera Deliciosa", variant=["4\" Pot"]
    */
   commaMode?: boolean;
+  /**
+   * When true, activates "Pipe Mode": the title column uses " | " as a variant
+   * separator.  Everything before the first " | " is the base product name;
+   * everything after is the first variant value (Option1).
+   *
+   * Additionally handles a two-dimension dash+pipe pattern:
+   *   "Short Sleeve T-Shirt - Blue | s"
+   * where the segment between " - " and " | " becomes Option1 (e.g. Color)
+   * and the segment after " | " becomes Option2 (e.g. Size).
+   *
+   * Examples:
+   *   "Mana Token Set | Blue"           → base="Mana Token Set",     Option1="Blue"
+   *   "12 piece D6s | Cumulus Cloud"    → base="12 piece D6s",       Option1="Cumulus Cloud"
+   *   "Short Sleeve T-Shirt - Blue | s" → base="Short Sleeve T-Shirt", Option1="Blue", Option2="s"
+   *   "Dragon Shield Matte Sleeves - Black (100-Pack)" → base="Dragon Shield Matte Sleeves", Option1="Black (100-Pack)"
+   *   "Snake Plant"                     → base="Snake Plant",         (standalone)
+   */
+  pipeMode?: boolean;
 }
 
 /**
@@ -559,6 +577,70 @@ export function splitTitleComma(title: string): {
   const variantTokens = parts.slice(1);
   const optionTypes = variantTokens.map((_, i) => `Option ${i + 1}`);
   return { base, variantTokens, optionTypes };
+}
+
+/**
+ * Pipe Mode: split a title on " | " (pipe with surrounding spaces).
+ * Handles two sub-patterns:
+ *
+ * 1. Single dimension:  "Base Name | Option1Value"
+ *    "Mana Token Set | Blue"  → base="Mana Token Set", Option1="Blue"
+ *
+ * 2. Dash+Pipe (two dimensions):  "Base Name - Option1Value | Option2Value"
+ *    "Short Sleeve T-Shirt - Blue | s"
+ *    → base="Short Sleeve T-Shirt", Option1="Blue", Option2="s"
+ *    (the dash segment before the pipe becomes Option1, the pipe segment becomes Option2)
+ *
+ * 3. Dash-only (no pipe):  "Base Name - Option1Value"
+ *    "Dragon Shield Matte Sleeves - Black (100-Pack)"
+ *    → base="Dragon Shield Matte Sleeves", Option1="Black (100-Pack)"
+ *
+ * 4. No separator → standalone product, no variant tokens.
+ *
+ * IMPORTANT: Only treat " - " as a variant separator when the same base name
+ * appears with multiple dash suffixes across the file.  For single rows the
+ * dash may simply be part of the product name (handled by caller grouping).
+ */
+export function splitTitlePipe(title: string): {
+  base: string;
+  variantTokens: string[];
+  optionTypes: string[];
+} {
+  const pipeIdx = title.indexOf(" | ");
+
+  if (pipeIdx !== -1) {
+    // There is a pipe — check if there is also a " - " before the pipe
+    const beforePipe = title.slice(0, pipeIdx).trim();
+    const afterPipe = title.slice(pipeIdx + 3).trim();
+
+    const dashIdx = beforePipe.indexOf(" - ");
+    if (dashIdx !== -1) {
+      // Dash+Pipe two-dimension pattern
+      const base = beforePipe.slice(0, dashIdx).trim();
+      const opt1 = beforePipe.slice(dashIdx + 3).trim();
+      const opt2 = afterPipe;
+      if (!opt1 && !opt2) return { base, variantTokens: [], optionTypes: [] };
+      if (!opt1) return { base, variantTokens: [opt2], optionTypes: ["Option 1"] };
+      if (!opt2) return { base, variantTokens: [opt1], optionTypes: ["Option 1"] };
+      return { base, variantTokens: [opt1, opt2], optionTypes: ["Option 1", "Option 2"] };
+    }
+
+    // Simple pipe: base | variant
+    if (!afterPipe) return { base: beforePipe, variantTokens: [], optionTypes: [] };
+    return { base: beforePipe, variantTokens: [afterPipe], optionTypes: ["Option 1"] };
+  }
+
+  // No pipe — try dash separator
+  const dashIdx = title.indexOf(" - ");
+  if (dashIdx !== -1) {
+    const base = title.slice(0, dashIdx).trim();
+    const opt1 = title.slice(dashIdx + 3).trim();
+    if (!opt1) return { base, variantTokens: [], optionTypes: [] };
+    return { base, variantTokens: [opt1], optionTypes: ["Option 1"] };
+  }
+
+  // No separator — standalone product
+  return { base: title.trim(), variantTokens: [], optionTypes: [] };
 }
 
 /**

@@ -3,7 +3,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
 import type { VariantConfig, ColumnSplitConfig } from "@/lib/mapping-utils";
-import { splitTitleSemantic, splitTitleSneaker, splitTitleComma } from "@/lib/mapping-utils";
+import { splitTitleSemantic, splitTitleSneaker, splitTitleComma, splitTitlePipe } from "@/lib/mapping-utils";
 
 // ---------------------------------------------------------------------------
 // Country name → ISO 3166-1 alpha-2 lookup
@@ -511,6 +511,7 @@ export function applyVariantTransform(
     additionalImageColumns,
     sneakerMode,
     commaMode,
+    pipeMode,
   } = variantConfig;
 
   // ── Title-parsing mode: variants are encoded in the title itself ──────────
@@ -532,7 +533,8 @@ export function applyVariantTransform(
       variantImageColumn,
       additionalImageColumns,
       sneakerMode,
-      commaMode
+      commaMode,
+      pipeMode
     );
   }
 
@@ -684,7 +686,8 @@ function applyTitleParsingTransform(
   variantImageColumn?: string,
   additionalImageColumns?: string[],
   sneakerMode?: boolean,
-  commaMode?: boolean
+  commaMode?: boolean,
+  pipeMode?: boolean
 ): Record<string, string>[] {
   // Build targetKey → sourceColumn map
   const targetToSource = new Map<string, string>();
@@ -719,6 +722,15 @@ function applyTitleParsingTransform(
       // Comma Mode: split on the first comma — left=base, right=variant value.
       // Titles without a comma become standalone products.
       const { base, variantTokens, optionTypes } = splitTitleComma(fullTitle);
+      if (!productGroups.has(base)) productGroups.set(base, []);
+      productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes });
+    } else if (pipeMode) {
+      // Pipe Mode: split on " | " (and optionally " - " before the pipe for two-option products).
+      // e.g. "Mana Token Set | Blue" → base="Mana Token Set", Option1="Blue"
+      // e.g. "Short Sleeve T-Shirt - Blue | s" → base="Short Sleeve T-Shirt", Option1="Blue", Option2="s"
+      // e.g. "Dragon Shield Matte Sleeves - Black (100-Pack)" → base="Dragon Shield Matte Sleeves", Option1="Black (100-Pack)"
+      // Titles without any separator become standalone products.
+      const { base, variantTokens, optionTypes } = splitTitlePipe(fullTitle);
       if (!productGroups.has(base)) productGroups.set(base, []);
       productGroups.get(base)!.push({ row, tokens: variantTokens, optionTypes });
     } else if (splitStrategy === "semantic") {

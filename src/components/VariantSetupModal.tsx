@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Layers, X, Info, Sparkles, SplitSquareHorizontal, Minus, Plus, Zap } from "lucide-react";
-import { smartDetectVariantConfig, detectTitleEncodedVariants, splitTitleSemantic, splitTitleSneaker, splitTitleComma, VariantConfig } from "@/lib/mapping-utils";
+import { smartDetectVariantConfig, detectTitleEncodedVariants, splitTitleSemantic, splitTitleSneaker, splitTitleComma, splitTitlePipe, VariantConfig } from "@/lib/mapping-utils";
 
 export type { VariantConfig };
 
@@ -34,6 +34,9 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
 
   // Comma Mode: title contains "Product Name, Variant Value" — split on the first comma
   const [commaMode, setCommaMode] = useState(false);
+
+  // Pipe Mode: title contains "Base Name | Variant" (and optionally "Base - Color | Size")
+  const [pipeMode, setPipeMode] = useState(false);
 
   const [smartApplied, setSmartApplied] = useState(!!smartResult);
 
@@ -100,6 +103,11 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
         const { base, variantTokens, optionTypes } = splitTitleComma(full);
         return { full, base, tokens: variantTokens, optionTypes };
       }
+      // Pipe Mode: split on " | " (and optionally " - " before pipe)
+      if (pipeMode) {
+        const { base, variantTokens, optionTypes } = splitTitlePipe(full);
+        return { full, base, tokens: variantTokens, optionTypes };
+      }
       if (splitStrategy === "semantic") {
         const { base, variantTokens, optionTypes } = splitTitleSemantic(full);
         // Build canonical slot map from optionNames
@@ -119,7 +127,7 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
       const tokens = parts.slice(Math.max(0, parts.length - wordCount));
       return { full, base, tokens, optionTypes: tokens.map((_, i) => optionNames[i] || `Option ${i + 1}`) };
     });
-  }, [rows, titleCol, wordCount, splitStrategy, optionNames, sneakerMode, commaMode]);
+  }, [rows, titleCol, wordCount, splitStrategy, optionNames, sneakerMode, commaMode, pipeMode]);
 
   const syncOptionNames = (newCount: number) => {
     setOptionNames((prev) => {
@@ -181,11 +189,11 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
   const handleConfirm = () => {
     if (mode === "title") {
       // For semantic mode, wordCount is dynamic (detected per-row) — we pass max seen
-      const effectiveWordCount = splitStrategy === "semantic" || sneakerMode || commaMode
+      const effectiveWordCount = splitStrategy === "semantic" || sneakerMode || commaMode || pipeMode
         ? Math.max(...titlePreviewRows.map((r) => r.tokens.length), 1)
         : wordCount;
       onConfirm({
-        optionColumns: sneakerMode ? ["Size"] : commaMode ? ["Variant"] : optionNames,
+        optionColumns: sneakerMode ? ["Size"] : commaMode ? ["Variant"] : pipeMode ? (titlePreviewRows.some(r => r.tokens.length > 1) ? ["Option 1", "Option 2"] : ["Option 1"]) : optionNames,
         groupByColumn: titleCol,
         skuColumn: skuCol,
         priceColumn: priceCol,
@@ -200,6 +208,7 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
         additionalImageColumns: additionalImgCols.length > 0 ? additionalImgCols : undefined,
         sneakerMode: sneakerMode || undefined,
         commaMode: commaMode || undefined,
+        pipeMode: pipeMode || undefined,
       });
     } else {
       onConfirm({
@@ -422,7 +431,7 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
                   borderColor: commaMode ? "#96BF48" : "#2A2D3A",
                   backgroundColor: commaMode ? "#96BF4812" : "#0F1117",
                 }}
-                onClick={() => setCommaMode((v) => !v)}
+                onClick={() => { setCommaMode((v) => !v); if (!commaMode) setPipeMode(false); }}
               >
                 <div
                   className="mt-0.5 w-3.5 h-3.5 rounded-sm border flex-shrink-0 flex items-center justify-center"
@@ -443,6 +452,38 @@ export function VariantSetupModal({ columns, variantColumns, rows = [], onClose,
                   </span>
                   <p className="text-xs mt-0.5" style={{ color: "#4A4D5E", fontFamily: "IBM Plex Mono, monospace" }}>
                     Title contains &quot;Product Name, Variant&quot; — split on the first comma. e.g. &quot;Monstera Deliciosa, 4&quot; Pot&quot; → base &quot;Monstera Deliciosa&quot;, variant &quot;4&quot; Pot&quot;.
+                  </p>
+                </div>
+              </div>
+
+              {/* Pipe Mode toggle — for "Base | Variant" and "Base - Color | Size" patterns */}
+              <div
+                className="flex items-start gap-3 px-3 py-2.5 rounded-sm border cursor-pointer transition-all"
+                style={{
+                  borderColor: pipeMode ? "#96BF48" : "#2A2D3A",
+                  backgroundColor: pipeMode ? "#96BF4812" : "#0F1117",
+                }}
+                onClick={() => { setPipeMode((v) => !v); if (!pipeMode) setCommaMode(false); }}
+              >
+                <div
+                  className="mt-0.5 w-3.5 h-3.5 rounded-sm border flex-shrink-0 flex items-center justify-center"
+                  style={{
+                    borderColor: pipeMode ? "#96BF48" : "#4A4D5E",
+                    backgroundColor: pipeMode ? "#96BF48" : "transparent",
+                  }}
+                >
+                  {pipeMode && (
+                    <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                      <path d="M1 4L3 6L7 2" stroke="#0F1117" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <span className="text-xs font-semibold" style={{ color: pipeMode ? "#96BF48" : "#C8CADE", fontFamily: "Syne, sans-serif" }}>
+                    🎮 Pipe Mode
+                  </span>
+                  <p className="text-xs mt-0.5" style={{ color: "#4A4D5E", fontFamily: "IBM Plex Mono, monospace" }}>
+                    Title uses <code style={{ background: "#1A1D27", padding: "0 3px", borderRadius: 2 }}> | </code> as separator. Handles single-option (<code style={{ background: "#1A1D27", padding: "0 3px", borderRadius: 2 }}>Mana Token Set | Blue</code>) and two-option dash+pipe (<code style={{ background: "#1A1D27", padding: "0 3px", borderRadius: 2 }}>T-Shirt - Blue | S</code>) patterns. Also handles dash-only (<code style={{ background: "#1A1D27", padding: "0 3px", borderRadius: 2 }}>Dragon Shield - Black</code>).
                   </p>
                 </div>
               </div>
