@@ -334,7 +334,7 @@ export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, onS
         {mappings.map((row, i) => {
           // Detect if any sample row has comma-containing values in this column
           const hasCommaValue = !!(sampleRows?.some((r) => {
-            const v = r[row.sourceColumn] ?? "";
+            const v = String(r[row.sourceColumn] ?? "");
             return v.includes(",") && v.split(",").length >= 2;
           }));
           const hasSplit = !!(row.splitConfig && row.splitConfig.parts.some((p) => p.targetFieldKey));
