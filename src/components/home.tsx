@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText } from "lucide-react";
+import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText, GitCompare } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -10,6 +10,7 @@ import { DataPreview } from "@/components/DataPreview";
 import { ValidationBar } from "@/components/ValidationBar";
 import { VariantSetupModal, VariantConfig } from "@/components/VariantSetupModal";
 import { ColumnSplitModal } from "@/components/ColumnSplitModal";
+import { CompareTab } from "@/components/CompareTab";
 
 import { parseFile, exportToShopifyCsvWithVariants, ParsedFile } from "@/lib/file-parser";
 import {
@@ -41,6 +42,8 @@ function Home() {
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
   // Split column modal state
   const [splitModalRowIndex, setSplitModalRowIndex] = useState<number | null>(null);
+  // Top-level tab
+  const [activeTab, setActiveTab] = useState<"map" | "compare">("map");
 
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
   const activeFile = files[activeFileIndex];
@@ -297,9 +300,33 @@ function Home() {
               Data Mapping Tool
             </p>
           </div>
+          {/* Tab switcher */}
+          <div className="flex items-center gap-1 ml-4" style={{ borderLeft: "1px solid #2A2D3A", paddingLeft: "16px" }}>
+            {([
+              { key: "map", label: "Map & Export", Icon: Package },
+              { key: "compare", label: "Compare", Icon: GitCompare },
+            ] as const).map(({ key, label, Icon }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs transition-all border"
+                style={{
+                  fontFamily: "Syne, sans-serif",
+                  fontWeight: 600,
+                  letterSpacing: "0.04em",
+                  borderColor: activeTab === key ? "#96BF4840" : "#2A2D3A",
+                  backgroundColor: activeTab === key ? "#96BF4815" : "transparent",
+                  color: activeTab === key ? "#96BF48" : "#4A4D5E",
+                }}
+              >
+                <Icon size={11} />
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {files.length > 1 && (
+        {activeTab === "map" && files.length > 1 && (
           <div className="flex items-center gap-1">
             {files.map((f, i) => (
               <button
@@ -367,8 +394,15 @@ function Home() {
         </div>
       </header>
 
+      {/* Compare Tab */}
+      {activeTab === "compare" && (
+        <div className="flex flex-1 overflow-hidden">
+          <CompareTab />
+        </div>
+      )}
+
       {/* Main 3-column Layout */}
-      <div className="flex flex-1 overflow-hidden">
+      {activeTab === "map" && <div className="flex flex-1 overflow-hidden">
         {/* Left Panel */}
         <div
           className="flex flex-col p-4 border-r shrink-0 overflow-y-auto"
@@ -580,7 +614,7 @@ function Home() {
             fileType={activeFileType}
           />
         </div>
-      </div>
+      </div>}
 
       {showVariantModal && activeFile && (
         <VariantSetupModal
