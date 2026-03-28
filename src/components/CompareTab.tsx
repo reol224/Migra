@@ -240,6 +240,7 @@ interface CompareColumn {
 
 interface CompareResult {
   key: string;
+  rowIndex: number;
   source: Record<string, string>;
   target: Record<string, string> | null;
   diffs: CompareColumn[];
@@ -251,7 +252,8 @@ function runComparison(
   fileB: ParsedSheet,
   keyColA: string,
   keyColB: string,
-  compareCols: CompareColumn[]
+  compareCols: CompareColumn[],
+  mode: "key" | "position"
 ): CompareResult[] {
   // Normalize: strip leading apostrophe (Excel text-prefix artifact), trim whitespace, lowercase
   const normalize = (v: unknown) =>
@@ -260,13 +262,36 @@ function runComparison(
   const normalizeDisplay = (v: unknown) =>
     String(v ?? "").trim().replace(/^'+/, "").trim();
 
+  if (mode === "position") {
+    return fileA.rows.map((rowA, i) => {
+      const rowB = fileB.rows[i] ?? null;
+      const diffs: CompareColumn[] = [];
+      for (const { colA, colB } of compareCols) {
+        if (!colA || !colB) continue;
+        const vA = normalizeDisplay(rowA[colA]);
+        const vB = rowB ? normalizeDisplay(rowB[colB]) : "";
+        if (vA !== vB) diffs.push({ colA, colB });
+      }
+      // key label: show keyColA value if set, otherwise row number
+      const keyLabel = keyColA ? normalizeDisplay(rowA[keyColA]) : `row ${i + 1}`;
+      return {
+        key: keyLabel,
+        rowIndex: i,
+        source: rowA,
+        target: rowB,
+        diffs,
+        allMatch: rowB !== null && diffs.length === 0,
+      };
+    });
+  }
+
   const bIndex = new Map<string, Record<string, string>>();
   for (const row of fileB.rows) {
     const k = normalize(row[keyColB]);
     if (k) bIndex.set(k, row);
   }
 
-  return fileA.rows.map((rowA) => {
+  return fileA.rows.map((rowA, i) => {
     const k = normalize(rowA[keyColA]);
     const rowB = bIndex.get(k) ?? null;
     const diffs: CompareColumn[] = [];
@@ -278,6 +303,7 @@ function runComparison(
     }
     return {
       key: normalizeDisplay(rowA[keyColA]),
+      rowIndex: i,
       source: rowA,
       target: rowB,
       diffs,
@@ -294,6 +320,7 @@ export function CompareTab() {
   const [compareCols, setCompareCols] = useState<CompareColumn[]>([{ colA: "", colB: "" }]);
   const [results, setResults] = useState<CompareResult[] | null>(null);
   const [filterMode, setFilterMode] = useState<"all" | "diff" | "match" | "missing">("all");
+  const [compareMode, setCompareMode] = useState<"key" | "position">("key");
 
   const addCompareCol = () => setCompareCols((prev) => [...prev, { colA: "", colB: "" }]);
   const removeCompareCol = (i: number) => setCompareCols((prev) => prev.filter((_, idx) => idx !== i));
@@ -301,9 +328,14 @@ export function CompareTab() {
     setCompareCols((prev) => prev.map((c, idx) => idx === i ? { ...c, [field]: v } : c));
   };
 
+  const canCompare = !!fileA && !!fileB && (
+    compareMode === "position" ? true : (!!keyColA && !!keyColB)
+  );
+
   const handleCompare = () => {
-    if (!fileA || !fileB || !keyColA || !keyColB) return;
-    const r = runComparison(fileA, fileB, keyColA, keyColB, compareCols);
+    if (!fileA || !fileB) return;
+    if (compareMode === "key" && (!keyColA || !keyColB)) return;
+    const r = runComparison(fileA, fileB, keyColA, keyColB, compareCols, compareMode);
     setResults(r);
   };
 
@@ -313,8 +345,6 @@ export function CompareTab() {
     if (filterMode === "missing") return r.target === null;
     return true;
   }) ?? [];
-
-  const canCompare = !!fileA && !!fileB && !!keyColA && !!keyColB;
 
   const stats = results ? {
     total: results.length,
@@ -337,6 +367,32 @@ export function CompareTab() {
           <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#4A4D5E" }}>
             — XLOOKUP-style column diff
           </span>
+
+          {/* Mode toggle */}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "2px", backgroundColor: "#0F1117", border: "1px solid #2A2D3A", borderRadius: "4px", padding: "2px" }}>
+            {(["key", "position"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => { setCompareMode(m); setResults(null); }}
+                style={{
+                  fontSize: "10px",
+                  fontFamily: "Syne, sans-serif",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  padding: "3px 10px",
+                  borderRadius: "3px",
+                  border: "none",
+                  cursor: "pointer",
+                  backgroundColor: compareMode === m ? "#96BF48" : "transparent",
+                  color: compareMode === m ? "#0F1117" : "#4A4D5E",
+                  transition: "all 0.15s",
+                }}
+              >
+                {m === "key" ? "By Key" : "By Position"}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* File drops */}
@@ -348,27 +404,47 @@ export function CompareTab() {
           <DropZone label="Mapped / new file" file={fileB} onFile={(f) => { setFileB(f); setKeyColB(""); setResults(null); }} onClear={() => { setFileB(null); setKeyColB(""); setResults(null); }} />
         </div>
 
-        {/* Key columns */}
+        {/* Key columns + compare columns */}
         {fileA && fileB && (
           <div style={{ marginBottom: "14px" }}>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
-              <ColSelect
-                label="Lookup key in original (e.g. SKU / Handle)"
-                headers={fileA.headers}
-                value={keyColA}
-                onChange={(v) => { setKeyColA(v); setResults(null); }}
-              />
-              <div style={{ paddingBottom: "8px", color: "#4A4D5E", flexShrink: 0, display: "flex", alignItems: "flex-end" }}>
-                <ArrowLeftRight size={13} />
+            {compareMode === "key" ? (
+              <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+                <ColSelect
+                  label="Lookup key in original (e.g. SKU / Handle)"
+                  headers={fileA.headers}
+                  value={keyColA}
+                  onChange={(v) => { setKeyColA(v); setResults(null); }}
+                />
+                <div style={{ paddingBottom: "8px", color: "#4A4D5E", flexShrink: 0, display: "flex", alignItems: "flex-end" }}>
+                  <ArrowLeftRight size={13} />
+                </div>
+                <ColSelect
+                  label="Lookup key in mapped file"
+                  headers={fileB.headers}
+                  value={keyColB}
+                  onChange={(v) => { setKeyColB(v); setResults(null); }}
+                />
+                <div style={{ width: "21px", flexShrink: 0 }} />
               </div>
-              <ColSelect
-                label="Lookup key in mapped file"
-                headers={fileB.headers}
-                value={keyColB}
-                onChange={(v) => { setKeyColB(v); setResults(null); }}
-              />
-              <div style={{ width: "21px", flexShrink: 0 }} />
-            </div>
+            ) : (
+              <div style={{ marginBottom: "10px", padding: "8px 12px", backgroundColor: "#0F1117", border: "1px solid #2A2D3A", borderRadius: "3px", display: "flex", alignItems: "center", gap: "12px" }}>
+                <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#4A4D5E" }}>
+                  Comparing row-by-row in order:
+                </span>
+                <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#96BF48" }}>
+                  {fileA.rows.length} rows (orig)
+                </span>
+                <ArrowLeftRight size={11} color="#4A4D5E" />
+                <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#4A8FBF" }}>
+                  {fileB.rows.length} rows (mapped)
+                </span>
+                {fileA.rows.length !== fileB.rows.length && (
+                  <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#F5A623" }}>
+                    ⚠ row counts differ — extra rows in longer file will show as missing
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* Compare columns */}
             <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
@@ -460,7 +536,7 @@ export function CompareTab() {
                     #
                   </th>
                   <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#4A4D5E", fontWeight: 600, whiteSpace: "nowrap" }}>
-                    Key ({keyColA})
+                    {compareMode === "position" ? "Row" : `Key (${keyColA})`}
                   </th>
                   <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#4A4D5E", fontWeight: 600, whiteSpace: "nowrap" }}>
                     Status
@@ -490,7 +566,12 @@ export function CompareTab() {
                       }}
                     >
                       <td style={{ padding: "6px 12px", color: "#2A2D3A" }}>{idx + 1}</td>
-                      <td style={{ padding: "6px 12px", color: "#C8CADE", fontWeight: 500 }}>{r.key || <span style={{ color: "#2A2D3A" }}>(empty)</span>}</td>
+                      <td style={{ padding: "6px 12px", color: "#C8CADE", fontWeight: 500 }}>
+                        {compareMode === "position"
+                          ? <span style={{ color: "#4A4D5E" }}>row {r.rowIndex + 1}</span>
+                          : (r.key || <span style={{ color: "#2A2D3A" }}>(empty)</span>)
+                        }
+                      </td>
                       <td style={{ padding: "6px 12px" }}>
                         {isMissing ? (
                           <span style={{ display: "flex", alignItems: "center", gap: "4px", color: "#E05C5C" }}>
