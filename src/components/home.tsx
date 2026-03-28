@@ -11,6 +11,7 @@ import { ValidationBar } from "@/components/ValidationBar";
 import { VariantSetupModal, VariantConfig } from "@/components/VariantSetupModal";
 import { ColumnSplitModal } from "@/components/ColumnSplitModal";
 import { CompareTab } from "@/components/CompareTab";
+import { QuickPasteModal } from "@/components/QuickPasteModal";
 
 import { parseFile, exportToShopifyCsvWithVariants, ParsedFile } from "@/lib/file-parser";
 import {
@@ -44,6 +45,8 @@ function Home() {
   const [splitModalRowIndex, setSplitModalRowIndex] = useState<number | null>(null);
   // Top-level tab
   const [activeTab, setActiveTab] = useState<"map" | "compare">("map");
+  // Quick paste modal
+  const [showQuickPaste, setShowQuickPaste] = useState(false);
 
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
   const activeFile = files[activeFileIndex];
@@ -105,6 +108,35 @@ function Home() {
     setVariantConfigPerFile((prev) => prev.filter((_, i) => i !== index));
     setActiveFileIndex((prev) => Math.max(0, prev === index ? prev - 1 : prev));
   }, []);
+
+  const handleQuickPasteData = useCallback(
+    async (headers: string[], rows: Record<string, string>[]) => {
+      const parsed: ParsedFile = {
+        name: "pasted-data.csv",
+        rowCount: rows.length,
+        headers,
+        rows,
+        previewRows: rows.slice(0, 50),
+      };
+      const type = await askFileType(parsed);
+      setFiles((prev) => {
+        const next = [...prev, parsed];
+        setActiveFileIndex(next.length - 1);
+        return next;
+      });
+      setFileTypes((prev) => [...prev, type]);
+      setMappingsPerFile((prev) => {
+        const mappings = autoMapColumns(headers, type);
+        return [...prev, mappings];
+      });
+      setVariantConfigPerFile((prev) => [...prev, null]);
+      if (type === "product") {
+        const detected = detectVariantColumns(headers);
+        setVariantColumns(detected);
+      }
+    },
+    [askFileType]
+  );
 
   const handleMappingChange = useCallback(
     (rowIndex: number, field: ShopifyField | null) => {
@@ -413,6 +445,7 @@ function Home() {
             uploadedFiles={files}
             onRemoveFile={handleRemoveFile}
             isLoading={isLoading && !parseProgress}
+            onQuickPaste={() => setShowQuickPaste(true)}
           />
 
           {activeFile && (
@@ -623,6 +656,13 @@ function Home() {
           rows={activeFile.previewRows}
           onClose={() => setShowVariantModal(false)}
           onConfirm={handleVariantConfirm}
+        />
+      )}
+
+      {showQuickPaste && (
+        <QuickPasteModal
+          onClose={() => setShowQuickPaste(false)}
+          onDataReady={handleQuickPasteData}
         />
       )}
 

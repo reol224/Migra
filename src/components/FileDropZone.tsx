@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from "react";
-import { Upload, FileText, X, AlertCircle } from "lucide-react";
+import { Upload, FileText, X, AlertCircle, Clipboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface FileDropZoneProps {
@@ -7,6 +7,7 @@ interface FileDropZoneProps {
   uploadedFiles: { name: string; rowCount: number; headers: string[] }[];
   onRemoveFile: (index: number) => void;
   isLoading: boolean;
+  onQuickPaste?: () => void;
 }
 
 export function FileDropZone({
@@ -14,6 +15,7 @@ export function FileDropZone({
   uploadedFiles,
   onRemoveFile,
   isLoading,
+  onQuickPaste,
 }: FileDropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,12 +70,31 @@ export function FileDropZone({
         >
           Source Files
         </span>
-        <span
-          className="text-xs"
-          style={{ color: "#4A4D5E", fontFamily: "IBM Plex Mono, monospace" }}
-        >
-          CSV / XLSX
-        </span>
+        <div className="flex items-center gap-2">
+          {onQuickPaste && (
+            <button
+              onClick={onQuickPaste}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-sm border transition-colors hover:border-[#96BF48] hover:text-[#96BF48] group"
+              style={{
+                borderColor: "#2A2D3A",
+                background: "#0F1117",
+                fontFamily: "IBM Plex Mono, monospace",
+              }}
+              title="Paste data directly from a spreadsheet"
+            >
+              <Clipboard size={10} className="text-[#4A4D5E] group-hover:text-[#96BF48] transition-colors" />
+              <span className="text-xs text-[#4A4D5E] group-hover:text-[#96BF48] transition-colors">
+                quick paste
+              </span>
+            </button>
+          )}
+          <span
+            className="text-xs"
+            style={{ color: "#4A4D5E", fontFamily: "IBM Plex Mono, monospace" }}
+          >
+            CSV / XLSX
+          </span>
+        </div>
       </div>
 
       {/* Drop Zone */}
