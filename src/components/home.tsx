@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText, GitCompare } from "lucide-react";
+import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText, GitCompare, Link2, Eraser, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -12,8 +12,10 @@ import { VariantSetupModal, VariantConfig } from "@/components/VariantSetupModal
 import { ColumnSplitModal } from "@/components/ColumnSplitModal";
 import { CompareTab } from "@/components/CompareTab";
 import { QuickPasteModal } from "@/components/QuickPasteModal";
+import { CrossFileMergeModal, CrossFileMergeConfig } from "@/components/CrossFileMergeModal";
 
-import { parseFile, exportToShopifyCsvWithVariants, ParsedFile } from "@/lib/file-parser";
+import Papa from "papaparse";
+import { parseFile, exportToShopifyCsvWithVariants, exportCrossFileMergedCsv, filterRowsBySku, ParsedFile } from "@/lib/file-parser";
 import {
   autoMapColumns,
   MappingRow,
@@ -47,10 +49,48 @@ function Home() {
   const [activeTab, setActiveTab] = useState<"map" | "compare">("map");
   // Quick paste modal
   const [showQuickPaste, setShowQuickPaste] = useState(false);
+  // Cross-file merge modal
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  // SKU column filter: pick a file + column whose values act as the SKU whitelist
+  const [skuSourceFileIndex, setSkuSourceFileIndex] = useState<number | null>(null);
+  const [skuSourceColumn, setSkuSourceColumn] = useState<string | null>(null);
+  // Which column in the active (target) file to match against
+  const [skuTargetColumn, setSkuTargetColumn] = useState<string | null>(null);
+
+  // Clean file input ref
+  const cleanFileInputRef = React.useRef<HTMLInputElement>(null);
+  const [isCleaningFile, setIsCleaningFile] = useState(false);
 
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
   const activeFile = files[activeFileIndex];
   const activeFileType = fileTypes[activeFileIndex];
+
+  /** Upload any CSV/Excel, strip ghost rows & columns (Column1, __EMPTY, etc.), download cleaned CSV */
+  const handleCleanFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset input so the same file can be re-selected
+    e.target.value = "";
+    setIsCleaningFile(true);
+    try {
+      const parsed = await parseFile(file);
+      // parsed.rows already has ghost rows + ghost columns removed
+      const baseName = file.name.replace(/\.(csv|xlsx|xls)$/i, "");
+      const csv = Papa.unparse({ fields: parsed.headers, data: parsed.rows });
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}_cleaned.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Cleaned file downloaded — ${parsed.rowCount} rows, ${parsed.headers.length} columns`);
+    } catch (err) {
+      toast.error(`Failed to clean file: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsCleaningFile(false);
+    }
+  }, []);
 
   // Ask user to pick file type, returns a promise resolving to the chosen type
   const askFileType = useCallback((parsed: ParsedFile): Promise<FileType> => {
@@ -107,6 +147,12 @@ function Home() {
     setMappingsPerFile((prev) => prev.filter((_, i) => i !== index));
     setVariantConfigPerFile((prev) => prev.filter((_, i) => i !== index));
     setActiveFileIndex((prev) => Math.max(0, prev === index ? prev - 1 : prev));
+    // Clear SKU column filter if the source file is removed
+    setSkuSourceFileIndex((prev) => {
+      if (prev === index) { setSkuSourceColumn(null); setSkuTargetColumn(null); return null; }
+      if (prev !== null && prev > index) return prev - 1;
+      return prev;
+    });
   }, []);
 
   const handleQuickPasteData = useCallback(
@@ -228,15 +274,54 @@ function Home() {
   const handleExport = () => {
     if (!activeFile) return;
     const variantConfig = variantConfigPerFile[activeFileIndex] ?? null;
-    exportToShopifyCsvWithVariants(activeFile.rows, activeMappings, activeFileType, variantConfig);
+
+    // Apply SKU column filter if configured
+    let rowsToExport = activeFile.rows;
+    if (skuSourceFileIndex !== null && skuSourceColumn && files[skuSourceFileIndex]) {
+      const sourceFile = files[skuSourceFileIndex];
+      // Extract unique SKU values from the chosen column of the source file
+      const skus = [...new Set(
+        sourceFile.rows
+          .map((r) => (r[skuSourceColumn] ?? "").trim())
+          .filter(Boolean)
+      )];
+      if (skus.length > 0) {
+        const { rows: filtered, skuColumn: detected } = filterRowsBySku(activeFile.rows, activeFile.headers, skus, skuTargetColumn);
+        rowsToExport = filtered;
+        if (!detected) {
+          toast.warning("No SKU column found in target file — exported all rows", {
+            style: { background: "#1A1D27", border: "1px solid #F5A62340", color: "#F5A623" },
+          });
+          rowsToExport = activeFile.rows;
+        }
+      }
+    }
+
+    exportToShopifyCsvWithVariants(rowsToExport, activeMappings, activeFileType, variantConfig);
     toast.success(
-      `Exported ${activeFile.rows.length.toLocaleString()} rows as Shopify CSV`,
+      `Exported ${rowsToExport.length.toLocaleString()} rows as Shopify CSV`,
       {
         style: {
           background: "#1A1D27",
           border: "1px solid #96BF4840",
           color: "#96BF48",
         },
+      }
+    );
+  };
+
+  const handleMergeExport = (config: CrossFileMergeConfig) => {
+    const parentFile = files[config.parentFileIndex];
+    const childFile = files[config.childFileIndex];
+    const parentMappings = mappingsPerFile[config.parentFileIndex] || [];
+    if (!parentFile || !childFile) return;
+    exportCrossFileMergedCsv(parentFile.rows, parentMappings, childFile.rows, config);
+    setShowMergeModal(false);
+    const modeLabel = config.outputMode === "merge_into_parent" ? "Injected into parent" : "New Shopify CSV";
+    toast.success(
+      `${modeLabel}: ${parentFile.rows.length} products + ${childFile.rows.length} variants`,
+      {
+        style: { background: "#1A1D27", border: "1px solid #96BF4840", color: "#96BF48" },
       }
     );
   };
@@ -407,9 +492,176 @@ function Home() {
             </div>
           )}
 
+          {/* Cross-file merge button — only when 2+ product files are loaded */}
+          {files.filter((_, i) => fileTypes[i] === "product").length >= 2 && (
+            <button
+              onClick={() => setShowMergeModal(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-sm text-xs font-bold transition-all border hover:border-[#96BF4870]"
+              style={{
+                borderColor: "#2A2D3A",
+                backgroundColor: "transparent",
+                color: "#96BF48",
+                fontFamily: "Syne, sans-serif",
+              }}
+            >
+              <Link2 size={12} />
+              Merge Files
+            </button>
+          )}
+
+          {/* SKU Column Filter */}
+          {files.length > 0 && (
+            <div className="flex items-center gap-2" style={{ borderLeft: "1px solid #2A2D3A", paddingLeft: "16px" }}>
+              <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: "10px", color: "#4A4D5E", whiteSpace: "nowrap" }}>
+                SKU filter from
+              </span>
+              {/* File selector */}
+              <select
+                value={skuSourceFileIndex ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === "") {
+                    setSkuSourceFileIndex(null);
+                    setSkuSourceColumn(null);
+                  } else {
+                    setSkuSourceFileIndex(Number(val));
+                    setSkuSourceColumn(null);
+                  }
+                }}
+                style={{
+                  background: "#0F1117",
+                  border: "1px solid #2A2D3A",
+                  borderRadius: "3px",
+                  color: skuSourceFileIndex !== null ? "#E2E4EE" : "#4A4D5E",
+                  fontFamily: "IBM Plex Mono, monospace",
+                  fontSize: "11px",
+                  padding: "3px 6px",
+                  outline: "none",
+                  cursor: "pointer",
+                  maxWidth: "130px",
+                }}
+              >
+                <option value="">— file —</option>
+                {files.map((f, i) => (
+                  <option key={i} value={i}>
+                    {f.name.length > 18 ? f.name.slice(0, 16) + "…" : f.name}
+                  </option>
+                ))}
+              </select>
+              {/* Column selector — only shown once a file is picked */}
+              {skuSourceFileIndex !== null && files[skuSourceFileIndex] && (
+                <select
+                  value={skuSourceColumn ?? ""}
+                  onChange={(e) => setSkuSourceColumn(e.target.value || null)}
+                  style={{
+                    background: "#0F1117",
+                    border: "1px solid #2A2D3A",
+                    borderRadius: "3px",
+                    color: skuSourceColumn ? "#96BF48" : "#4A4D5E",
+                    fontFamily: "IBM Plex Mono, monospace",
+                    fontSize: "11px",
+                    padding: "3px 6px",
+                    outline: "none",
+                    cursor: "pointer",
+                    maxWidth: "150px",
+                  }}
+                >
+                  <option value="">— column —</option>
+                  {files[skuSourceFileIndex].headers.map((h) => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+              )}
+              {/* Active indicator + clear */}
+              {skuSourceColumn && (
+                <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                  <span style={{ color: "#4A4D5E", fontFamily: "IBM Plex Mono, monospace", fontSize: "10px" }}>→ match in</span>
+                  {/* Target column picker for the active file */}
+                  <select
+                    value={skuTargetColumn ?? ""}
+                    onChange={(e) => setSkuTargetColumn(e.target.value || null)}
+                    style={{
+                      background: "#0F1117",
+                      border: "1px solid #2A2D3A",
+                      borderRadius: "3px",
+                      color: skuTargetColumn ? "#E2E4EE" : "#4A4D5E",
+                      fontFamily: "IBM Plex Mono, monospace",
+                      fontSize: "11px",
+                      padding: "3px 6px",
+                      outline: "none",
+                      cursor: "pointer",
+                      maxWidth: "140px",
+                    }}
+                  >
+                    <option value="">auto-detect</option>
+                    {(activeFile?.headers ?? []).map((h) => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                  <span style={{
+                    background: "#96BF4820",
+                    border: "1px solid #96BF4840",
+                    borderRadius: "3px",
+                    color: "#96BF48",
+                    fontFamily: "IBM Plex Mono, monospace",
+                    fontSize: "10px",
+                    padding: "2px 5px",
+                    whiteSpace: "nowrap",
+                  }}>
+                    {[...new Set(
+                      files[skuSourceFileIndex!]?.rows.map((r) => (r[skuSourceColumn] ?? "").trim()).filter(Boolean)
+                    )].length} SKUs
+                  </span>
+                  <button
+                    onClick={() => { setSkuSourceFileIndex(null); setSkuSourceColumn(null); setSkuTargetColumn(null); }}
+                    title="Clear SKU filter"
+                    style={{ color: "#4A4D5E", background: "none", border: "none", cursor: "pointer", lineHeight: 1, fontSize: "14px" }}
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Hidden file input for clean-file feature */}
+          <input
+            ref={cleanFileInputRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            style={{ display: "none" }}
+            onChange={handleCleanFileSelected}
+          />
+
+          {/* Clean File button */}
           <button
-            disabled={!canExport}
-            onClick={handleExport}
+            onClick={() => cleanFileInputRef.current?.click()}
+            disabled={isCleaningFile}
+            title="Upload a CSV or Excel file — strips empty rows and auto-named ghost columns (Column1, __EMPTY, etc.) and downloads the cleaned CSV"
+            className="flex items-center gap-2 px-3 py-2 rounded-sm text-xs font-bold transition-all border hover:border-[#96BF4870] active:scale-95"
+            style={{
+              borderColor: "#2A2D3A",
+              backgroundColor: "transparent",
+              color: isCleaningFile ? "#4A4D5E" : "#E2E4EE",
+              fontFamily: "Syne, sans-serif",
+              cursor: isCleaningFile ? "wait" : "pointer",
+            }}
+          >
+            {isCleaningFile ? (
+              <>
+                <Upload size={12} className="animate-pulse" />
+                Cleaning…
+              </>
+            ) : (
+              <>
+                <Eraser size={12} />
+                Clean File
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={canExport ? handleExport : undefined}
             className={cn(
               "flex items-center gap-2 px-4 py-2 rounded-sm text-xs font-bold transition-all",
               canExport ? "active:scale-95 hover:opacity-90" : "opacity-30 cursor-not-allowed"
@@ -663,6 +915,15 @@ function Home() {
         <QuickPasteModal
           onClose={() => setShowQuickPaste(false)}
           onDataReady={handleQuickPasteData}
+        />
+      )}
+
+      {showMergeModal && files.length >= 2 && (
+        <CrossFileMergeModal
+          files={files}
+          mappingsPerFile={mappingsPerFile}
+          onClose={() => setShowMergeModal(false)}
+          onConfirm={handleMergeExport}
         />
       )}
 

@@ -93,6 +93,32 @@ export interface VariantConfig {
 }
 
 /**
+ * Configuration for cross-file variant merging.
+ * Parent file supplies product-level data; child file supplies variant rows.
+ * They are linked by stripping a suffix from the child key to get the parent key.
+ */
+export interface CrossFileMergeConfig {
+  parentFileIndex: number;
+  childFileIndex: number;
+  /** Column in the parent file that acts as the product identifier (e.g. Handle/SKU) */
+  parentKeyColumn: string;
+  /** Column in the child file whose prefix matches the parent key */
+  childKeyColumn: string;
+  stripMode: "prefix" | "exact";
+  stripRule: "numeric_suffix" | `fixed:${number}`;
+  variantColumns: {
+    sourceCol: string;
+    shopifyField: string;
+  }[];
+  /**
+   * "new_file"        — produce a brand-new Shopify-format CSV (default)
+   * "merge_into_parent" — inject matched child columns back into the parent rows
+   *                       and export the enriched parent file
+   */
+  outputMode: "new_file" | "merge_into_parent";
+}
+
+/**
  * Describes how to split a single source column's comma-delimited value
  * into multiple Shopify target fields.
  *

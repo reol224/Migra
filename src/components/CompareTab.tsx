@@ -253,7 +253,7 @@ function runComparison(
   keyColA: string,
   keyColB: string,
   compareCols: CompareColumn[],
-  mode: "key" | "position"
+  mode: "key"
 ): CompareResult[] {
   // Normalize: strip leading apostrophe (Excel text-prefix artifact), trim whitespace, lowercase
   const normalize = (v: unknown) =>
@@ -261,44 +261,42 @@ function runComparison(
   // Normalize for display (strip apostrophe + trim, but keep original case)
   const normalizeDisplay = (v: unknown) =>
     String(v ?? "").trim().replace(/^'+/, "").trim();
+  // Normalize for comparison: numeric-aware so "10.00" == "10", also lowercases
+  const normalizeForCompare = (v: unknown) => {
+    const s = String(v ?? "").trim().replace(/^'+/, "").trim();
+    // If it looks like a number (including negative, decimal), normalise to avoid "10.00" ≠ "10"
+    const n = Number(s);
+    if (s !== "" && !isNaN(n) && isFinite(n)) {
+      // Use toPrecision to avoid float junk, then strip trailing zeros
+      return String(n);
+    }
+    return s.toLowerCase();
+  };
 
-  if (mode === "position") {
-    return fileA.rows.map((rowA, i) => {
-      const rowB = fileB.rows[i] ?? null;
-      const diffs: CompareColumn[] = [];
-      for (const { colA, colB } of compareCols) {
-        if (!colA || !colB) continue;
-        const vA = normalizeDisplay(rowA[colA]);
-        const vB = rowB ? normalizeDisplay(rowB[colB]) : "";
-        if (vA !== vB) diffs.push({ colA, colB });
-      }
-      // key label: show keyColA value if set, otherwise row number
-      const keyLabel = keyColA ? normalizeDisplay(rowA[keyColA]) : `row ${i + 1}`;
-      return {
-        key: keyLabel,
-        rowIndex: i,
-        source: rowA,
-        target: rowB,
-        diffs,
-        allMatch: rowB !== null && diffs.length === 0,
-      };
-    });
-  }
-
-  const bIndex = new Map<string, Record<string, string>>();
+  // mode === "key"
+  // Build a multi-index: key → array of rows (to handle duplicate keys like Shopify variants)
+  // Empty keys are stored under "" so they still match positionally (e.g. variant rows with no SKU)
+  const bMultiIndex = new Map<string, Record<string, string>[]>();
   for (const row of fileB.rows) {
-    const k = normalize(row[keyColB]);
-    if (k) bIndex.set(k, row);
+    const k = normalize(row[keyColB]); // may be "" for empty keys — that's OK
+    if (!bMultiIndex.has(k)) bMultiIndex.set(k, []);
+    bMultiIndex.get(k)!.push(row);
   }
+  // Track how many times each key has been consumed (for positional matching within a group)
+  const bConsumedCount = new Map<string, number>();
 
   return fileA.rows.map((rowA, i) => {
     const k = normalize(rowA[keyColA]);
-    const rowB = bIndex.get(k) ?? null;
+    // Don't match empty keys — an empty SKU/key should show as missing, not positionally paired
+    const candidates = k === "" ? [] : (bMultiIndex.get(k) ?? []);
+    const consumed = k === "" ? 0 : (bConsumedCount.get(k) ?? 0);
+    const rowB = candidates[consumed] ?? null;
+    if (k !== "") bConsumedCount.set(k, consumed + 1);
     const diffs: CompareColumn[] = [];
     for (const { colA, colB } of compareCols) {
       if (!colA || !colB) continue;
-      const vA = normalizeDisplay(rowA[colA]);
-      const vB = rowB ? normalizeDisplay(rowB[colB]) : "";
+      const vA = normalizeForCompare(rowA[colA]);
+      const vB = rowB ? normalizeForCompare(rowB[colB]) : "";
       if (vA !== vB) diffs.push({ colA, colB });
     }
     return {
@@ -320,7 +318,12 @@ export function CompareTab() {
   const [compareCols, setCompareCols] = useState<CompareColumn[]>([{ colA: "", colB: "" }]);
   const [results, setResults] = useState<CompareResult[] | null>(null);
   const [filterMode, setFilterMode] = useState<"all" | "diff" | "match" | "missing">("all");
-  const [compareMode, setCompareMode] = useState<"key" | "position">("key");
+  const [contextCols, setContextCols] = useState<CompareColumn[]>([]);
+  const addContextCol = () => setContextCols((prev) => [...prev, { colA: "", colB: "" }]);
+  const removeContextCol = (i: number) => setContextCols((prev) => prev.filter((_, idx) => idx !== i));
+  const updateContextCol = (i: number, field: "colA" | "colB", v: string) => {
+    setContextCols((prev) => prev.map((c, idx) => idx === i ? { ...c, [field]: v } : c));
+  };
 
   const addCompareCol = () => setCompareCols((prev) => [...prev, { colA: "", colB: "" }]);
   const removeCompareCol = (i: number) => setCompareCols((prev) => prev.filter((_, idx) => idx !== i));
@@ -328,14 +331,11 @@ export function CompareTab() {
     setCompareCols((prev) => prev.map((c, idx) => idx === i ? { ...c, [field]: v } : c));
   };
 
-  const canCompare = !!fileA && !!fileB && (
-    compareMode === "position" ? true : (!!keyColA && !!keyColB)
-  );
+  const canCompare = !!fileA && !!fileB && !!keyColA && !!keyColB;
 
   const handleCompare = () => {
-    if (!fileA || !fileB) return;
-    if (compareMode === "key" && (!keyColA || !keyColB)) return;
-    const r = runComparison(fileA, fileB, keyColA, keyColB, compareCols, compareMode);
+    if (!fileA || !fileB || !keyColA || !keyColB) return;
+    const r = runComparison(fileA, fileB, keyColA, keyColB, compareCols, "key");
     setResults(r);
   };
 
@@ -354,6 +354,7 @@ export function CompareTab() {
   } : null;
 
   const activeCompareCols = compareCols.filter((c) => c.colA && c.colB);
+  const activeContextCols = contextCols.filter((c) => c.colA && c.colB);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%", backgroundColor: "#0F1117", overflow: "hidden" }}>
@@ -368,49 +369,96 @@ export function CompareTab() {
             — XLOOKUP-style column diff
           </span>
 
-          {/* Mode toggle */}
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "2px", backgroundColor: "#0F1117", border: "1px solid #2A2D3A", borderRadius: "4px", padding: "2px" }}>
-            {(["key", "position"] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => { setCompareMode(m); setResults(null); }}
-                style={{
-                  fontSize: "10px",
-                  fontFamily: "Syne, sans-serif",
-                  fontWeight: 700,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  padding: "3px 10px",
-                  borderRadius: "3px",
-                  border: "none",
-                  cursor: "pointer",
-                  backgroundColor: compareMode === m ? "#96BF48" : "transparent",
-                  color: compareMode === m ? "#0F1117" : "#4A4D5E",
-                  transition: "all 0.15s",
-                }}
-              >
-                {m === "key" ? "By Key" : "By Position"}
-              </button>
-            ))}
-          </div>
+          {/* Mode toggle removed — key-only mode */}
         </div>
 
         {/* File drops */}
         <div style={{ display: "flex", gap: "12px", marginBottom: "14px" }}>
-          <DropZone label="Original file" file={fileA} onFile={(f) => { setFileA(f); setKeyColA(""); setResults(null); }} onClear={() => { setFileA(null); setKeyColA(""); setResults(null); }} />
+          <DropZone label="Original file" file={fileA} onFile={(f) => {
+            setFileA(f);
+            setKeyColA("");
+            setResults(null);
+            // Auto-detect same-schema files (e.g. same Shopify export before/after edits)
+            if (fileB) {
+              const sharedHeaders = f.headers.filter(h => fileB.headers.some(bh => bh.toLowerCase() === h.toLowerCase()));
+              const sameSchema = sharedHeaders.length === f.headers.length && sharedHeaders.length === fileB.headers.length;
+              if (sameSchema) {
+                // Both files have the same headers — auto-set key to Handle (or Title) and compare to Price
+                const handleCol = f.headers.find(h => h.toLowerCase() === "handle") ?? f.headers.find(h => h.toLowerCase() === "title") ?? "";
+                const matchingBCol = fileB.headers.find(h => h.toLowerCase() === (handleCol ? handleCol.toLowerCase() : "")) ?? "";
+                if (handleCol) { setKeyColA(handleCol); setKeyColB(matchingBCol || handleCol); }
+                const priceCol = f.headers.find(h => h.toLowerCase() === "variant price" || h.toLowerCase() === "price");
+                if (priceCol) setCompareCols([{ colA: priceCol, colB: fileB.headers.find(h => h.toLowerCase() === priceCol.toLowerCase()) || priceCol }]);
+                return;
+              }
+              // If this file has no Handle but fileB does, auto-suggest Title→Handle
+              if (!f.headers.some(h => h.toLowerCase() === "handle")) {
+                const hasBHandle = fileB.headers.some(h => h.toLowerCase() === "handle");
+                if (hasBHandle) {
+                  const titleCol = f.headers.find(h => h.toLowerCase() === "title");
+                  const handleCol = fileB.headers.find(h => h.toLowerCase() === "handle");
+                  if (titleCol && handleCol) { setKeyColA(titleCol); setKeyColB(handleCol); }
+                }
+              }
+            }
+          }} onClear={() => { setFileA(null); setKeyColA(""); setResults(null); }} />
           <div style={{ display: "flex", alignItems: "center", flexShrink: 0, color: "#2A2D3A" }}>
             <ArrowLeftRight size={16} />
           </div>
-          <DropZone label="Mapped / new file" file={fileB} onFile={(f) => { setFileB(f); setKeyColB(""); setResults(null); }} onClear={() => { setFileB(null); setKeyColB(""); setResults(null); }} />
+          <DropZone label="Mapped / new file" file={fileB} onFile={(f) => {
+            setFileB(f);
+            setKeyColB("");
+            setResults(null);
+            // Auto-detect same-schema files
+            if (fileA) {
+              const sharedHeaders = f.headers.filter(h => fileA.headers.some(ah => ah.toLowerCase() === h.toLowerCase()));
+              const sameSchema = sharedHeaders.length === f.headers.length && sharedHeaders.length === fileA.headers.length;
+              if (sameSchema) {
+                const handleCol = fileA.headers.find(h => h.toLowerCase() === "handle") ?? fileA.headers.find(h => h.toLowerCase() === "title") ?? "";
+                const matchingBCol = f.headers.find(h => h.toLowerCase() === (handleCol ? handleCol.toLowerCase() : "")) ?? "";
+                if (handleCol) { setKeyColA(handleCol); setKeyColB(matchingBCol || handleCol); }
+                const priceCol = fileA.headers.find(h => h.toLowerCase() === "variant price" || h.toLowerCase() === "price");
+                if (priceCol) setCompareCols([{ colA: priceCol, colB: f.headers.find(h => h.toLowerCase() === priceCol.toLowerCase()) || priceCol }]);
+                return;
+              }
+              // If mapped file has Handle and original has no Handle, auto-suggest Title→Handle
+              if (f.headers.some(h => h.toLowerCase() === "handle") && fileA) {
+                const hasAHandle = fileA.headers.some(h => h.toLowerCase() === "handle");
+                if (!hasAHandle) {
+                  const titleCol = fileA.headers.find(h => h.toLowerCase() === "title");
+                  const handleCol = f.headers.find(h => h.toLowerCase() === "handle");
+                  if (titleCol && handleCol) { setKeyColA(titleCol); setKeyColB(handleCol); }
+                }
+              }
+            }
+          }} onClear={() => { setFileB(null); setKeyColB(""); setResults(null); }} />
         </div>
 
         {/* Key columns + compare columns */}
         {fileA && fileB && (
           <div style={{ marginBottom: "14px" }}>
-            {compareMode === "key" ? (
-              <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+            {/* Same-schema info banner */}
+            {(() => {
+              const sharedHeaders = fileA.headers.filter(h => fileB.headers.some(bh => bh.toLowerCase() === h.toLowerCase()));
+              const sameSchema = sharedHeaders.length === fileA.headers.length && sharedHeaders.length === fileB.headers.length;
+              if (!sameSchema) return null;
+              return (
+                <div style={{ marginBottom: "10px", padding: "8px 12px", backgroundColor: "#0F1A10", border: "1px solid #96BF4840", borderRadius: "3px", fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#96BF48", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span>✓</span>
+                  <span>Same schema detected — key &amp; compare columns auto-set. Rows are matched by <strong style={{ color: "#fff" }}>{keyColA || "Handle/Title"}</strong> regardless of order, so moved rows will still match correctly.</span>
+                </div>
+              );
+            })()}
+            {/* No-Handle warning banner */}
+            {!fileA.headers.some(h => h.toLowerCase() === "handle") && fileB.headers.some(h => h.toLowerCase() === "handle") && (
+              <div style={{ marginBottom: "10px", padding: "8px 12px", backgroundColor: "#1A1410", border: "1px solid #F5A62355", borderRadius: "3px", fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#F5A623", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>⚠</span>
+                <span>Original file has no <strong style={{ color: "#fff" }}>Handle</strong> column — use <strong style={{ color: "#fff" }}>Title</strong> or <strong style={{ color: "#fff" }}>SKU</strong> from the original as your lookup key, matched against <strong style={{ color: "#fff" }}>Handle</strong> in the mapped file.</span>
+              </div>
+            )}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
                 <ColSelect
-                  label="Lookup key in original (e.g. SKU / Handle)"
+                  label="Key col in original (e.g. Title, SKU)"
                   headers={fileA.headers}
                   value={keyColA}
                   onChange={(v) => { setKeyColA(v); setResults(null); }}
@@ -419,32 +467,26 @@ export function CompareTab() {
                   <ArrowLeftRight size={13} />
                 </div>
                 <ColSelect
-                  label="Lookup key in mapped file"
+                  label="Matching key in mapped file (e.g. Handle, Title)"
                   headers={fileB.headers}
                   value={keyColB}
-                  onChange={(v) => { setKeyColB(v); setResults(null); }}
+                  onChange={(v) => {
+                    setKeyColB(v);
+                    // If user picks Handle from mapped file but original has no Handle, auto-suggest Title
+                    if (v.toLowerCase() === "handle" && !fileA.headers.some(h => h.toLowerCase() === "handle")) {
+                      const titleCol = fileA.headers.find(h => h.toLowerCase() === "title");
+                      if (titleCol && !keyColA) setKeyColA(titleCol);
+                    }
+                    setResults(null);
+                  }}
                 />
                 <div style={{ width: "21px", flexShrink: 0 }} />
-              </div>
-            ) : (
-              <div style={{ marginBottom: "10px", padding: "8px 12px", backgroundColor: "#0F1117", border: "1px solid #2A2D3A", borderRadius: "3px", display: "flex", alignItems: "center", gap: "12px" }}>
-                <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#4A4D5E" }}>
-                  Comparing row-by-row in order:
-                </span>
-                <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#96BF48" }}>
-                  {fileA.rows.length} rows (orig)
-                </span>
-                <ArrowLeftRight size={11} color="#4A4D5E" />
-                <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#4A8FBF" }}>
-                  {fileB.rows.length} rows (mapped)
-                </span>
-                {fileA.rows.length !== fileB.rows.length && (
-                  <span style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#F5A623" }}>
-                    ⚠ row counts differ — extra rows in longer file will show as missing
-                  </span>
+                {keyColB.toLowerCase() === "handle" && !fileA.headers.some(h => h.toLowerCase() === "handle") && (
+                  <div style={{ width: "100%", marginTop: "4px", fontSize: "10px", fontFamily: "IBM Plex Mono, monospace", color: "#F5A623", display: "flex", alignItems: "center", gap: "4px" }}>
+                    ⚠ Original file has no Handle — matching via <strong style={{ color: "#fff" }}>{keyColA || "?"}</strong> → Handle
+                  </div>
                 )}
               </div>
-            )}
 
             {/* Compare columns */}
             <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
@@ -470,6 +512,39 @@ export function CompareTab() {
                   onChangeA={(v) => { updateCompareCol(i, "colA", v); setResults(null); }}
                   onChangeB={(v) => { updateCompareCol(i, "colB", v); setResults(null); }}
                   onRemove={() => removeCompareCol(i)}
+                />
+              ))}
+            </div>
+
+            {/* Context columns — always visible in results, not compared */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: "10px", fontFamily: "Syne, sans-serif", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#4A4D5E" }}>
+                  Also Show (context)
+                </span>
+                <button
+                  onClick={addContextCol}
+                  style={{ fontSize: "11px", fontFamily: "IBM Plex Mono, monospace", color: "#4A8FBF", background: "none", border: "none", cursor: "pointer", padding: "0" }}
+                >
+                  + add
+                </button>
+              </div>
+              {contextCols.length === 0 && (
+                <span style={{ fontSize: "10px", fontFamily: "IBM Plex Mono, monospace", color: "#2A2D3A" }}>
+                  Add columns here to always show them in results (e.g. Handle when key is SKU)
+                </span>
+              )}
+              {contextCols.map((c, i) => (
+                <ColMapRow
+                  key={i}
+                  label={`Ctx ${i + 1}`}
+                  headersA={fileA.headers}
+                  headersB={fileB.headers}
+                  valueA={c.colA}
+                  valueB={c.colB}
+                  onChangeA={(v) => updateContextCol(i, "colA", v)}
+                  onChangeB={(v) => updateContextCol(i, "colB", v)}
+                  onRemove={() => removeContextCol(i)}
                 />
               ))}
             </div>
@@ -536,7 +611,7 @@ export function CompareTab() {
                     #
                   </th>
                   <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#4A4D5E", fontWeight: 600, whiteSpace: "nowrap" }}>
-                    {compareMode === "position" ? "Row" : `Key (${keyColA})`}
+                    {`Key (${keyColA})`}
                   </th>
                   <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#4A4D5E", fontWeight: 600, whiteSpace: "nowrap" }}>
                     Status
@@ -548,6 +623,16 @@ export function CompareTab() {
                       </th>
                       <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#4A8FBF80", fontWeight: 600, whiteSpace: "nowrap" }}>
                         {c.colB} (mapped)
+                      </th>
+                    </React.Fragment>
+                  ))}
+                  {activeContextCols.map((c, i) => (
+                    <React.Fragment key={`ctx-${i}`}>
+                      <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#C8CADE50", fontWeight: 600, whiteSpace: "nowrap", borderLeft: i === 0 ? "1px solid #2A2D3A" : undefined }}>
+                        {c.colA}
+                      </th>
+                      <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #2A2D3A", color: "#C8CADE30", fontWeight: 600, whiteSpace: "nowrap" }}>
+                        {c.colB}
                       </th>
                     </React.Fragment>
                   ))}
@@ -567,10 +652,7 @@ export function CompareTab() {
                     >
                       <td style={{ padding: "6px 12px", color: "#2A2D3A" }}>{idx + 1}</td>
                       <td style={{ padding: "6px 12px", color: "#C8CADE", fontWeight: 500 }}>
-                        {compareMode === "position"
-                          ? <span style={{ color: "#4A4D5E" }}>row {r.rowIndex + 1}</span>
-                          : (r.key || <span style={{ color: "#2A2D3A" }}>(empty)</span>)
-                        }
+                        {r.key || <span style={{ color: "#2A2D3A" }}>(empty)</span>}
                       </td>
                       <td style={{ padding: "6px 12px" }}>
                         {isMissing ? (
@@ -602,12 +684,26 @@ export function CompareTab() {
                           </React.Fragment>
                         );
                       })}
+                      {activeContextCols.map((c, ci) => {
+                        const vA = String(r.source[c.colA] ?? "").trim().replace(/^'+/, "").trim();
+                        const vB = r.target ? String(r.target[c.colB] ?? "").trim().replace(/^'+/, "").trim() : "";
+                        return (
+                          <React.Fragment key={`ctx-${ci}`}>
+                            <td style={{ padding: "6px 12px", color: "#C8CADE60", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderLeft: ci === 0 ? "1px solid #2A2D3A" : undefined }} title={vA}>
+                              {vA || <span style={{ color: "#2A2D3A" }}>—</span>}
+                            </td>
+                            <td style={{ padding: "6px 12px", color: "#C8CADE40", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={vB}>
+                              {vB || <span style={{ color: "#2A2D3A" }}>—</span>}
+                            </td>
+                          </React.Fragment>
+                        );
+                      })}
                     </tr>
                   );
                 })}
                 {filteredResults.length === 0 && (
                   <tr>
-                    <td colSpan={3 + activeCompareCols.length * 2} style={{ padding: "24px", textAlign: "center", color: "#4A4D5E" }}>
+                    <td colSpan={3 + activeCompareCols.length * 2 + activeContextCols.length * 2} style={{ padding: "24px", textAlign: "center", color: "#4A4D5E" }}>
                       No rows match this filter.
                     </td>
                   </tr>

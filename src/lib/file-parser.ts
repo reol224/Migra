@@ -2,7 +2,7 @@ import { titleToHandle, toMetafieldKey, splitTitleIntoBaseAndVariants } from "@/
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { SHOPIFY_PRODUCT_FIELDS, SHOPIFY_CUSTOMER_FIELDS, FileType } from "@/lib/shopify-fields";
-import type { VariantConfig, ColumnSplitConfig } from "@/lib/mapping-utils";
+import type { VariantConfig, ColumnSplitConfig, CrossFileMergeConfig } from "@/lib/mapping-utils";
 import { splitTitleSemantic, splitTitleSneaker, splitTitleComma, splitTitlePipe } from "@/lib/mapping-utils";
 
 // ---------------------------------------------------------------------------
@@ -353,6 +353,46 @@ async function parseExcel(
   };
 }
 
+// ---------------------------------------------------------------------------
+// filterRowsBySku
+// ---------------------------------------------------------------------------
+/**
+ * Given a parsed file's rows + headers, return only the rows whose SKU column
+ * value matches one of the supplied SKUs (case-insensitive, trimmed).
+ *
+ * @param rows     - All data rows from the parsed file.
+ * @param headers  - Column headers of the file.
+ * @param skus     - One or more SKU strings to keep. A single string is also accepted.
+ * @returns        An object with the matching rows and the detected SKU column name.
+ */
+export function filterRowsBySku(
+  rows: Record<string, string>[],
+  headers: string[],
+  skus: string | string[],
+  targetColumn?: string | null
+): { rows: Record<string, string>[]; skuColumn: string | null } {
+  // Use the explicitly provided column, or auto-detect
+  const skuColumn =
+    (targetColumn && headers.includes(targetColumn) ? targetColumn : null) ??
+    headers.find((h) => /^sku$/i.test(h.trim())) ??
+    headers.find((h) => /sku/i.test(h.trim())) ??
+    null;
+
+  if (!skuColumn) {
+    return { rows: [], skuColumn: null };
+  }
+
+  const needle = new Set(
+    (Array.isArray(skus) ? skus : [skus]).map((s) => s.trim().toLowerCase())
+  );
+
+  const matched = rows.filter((row) =>
+    needle.has((row[skuColumn] ?? "").trim().toLowerCase())
+  );
+
+  return { rows: matched, skuColumn };
+}
+
 export function exportToShopifyCsv(
   rows: Record<string, string>[],
   mappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean; splitConfig?: ColumnSplitConfig }[],
@@ -556,9 +596,16 @@ export function applyVariantTransform(
   const handleSourceCol = targetToSource.get("Handle") || targetToSource.get("Title") || groupByColumn;
 
   // ── Group rows by product identifier ──────────────────────────────────────
+  // Use groupByColumn first, fall back to handleSourceCol, then treat each row as unique.
   const productGroups = new Map<string, Record<string, string>[]>();
+  let _fallbackIdx = 0;
   for (const row of sourceRows) {
-    const key = row[groupByColumn] ?? "";
+    const rawKey = groupByColumn ? (row[groupByColumn] ?? "").toString().trim() : "";
+    // If the group key is empty, fall back to the handle source col, then to a unique sentinel
+    const key = rawKey
+      || (handleSourceCol && handleSourceCol !== groupByColumn ? (row[handleSourceCol] ?? "").toString().trim() : "")
+      || `__row_${_fallbackIdx}`;
+    _fallbackIdx++;
     if (!productGroups.has(key)) productGroups.set(key, []);
     productGroups.get(key)!.push(row);
   }
@@ -581,23 +628,30 @@ export function applyVariantTransform(
 
       if (idx === 0) {
         // ── Parent row: write all product-level fields ──
+        // Skip Option{N} Name/Value — managed exclusively by the injection block below
         for (const [targetKey, sourceCol] of targetToSource) {
           if (targetKey === "Handle") {
             shopifyRow[targetKey] = handle;
+          } else if (/^Option\d+ (Name|Value)$/.test(targetKey)) {
+            // Handled by the option injection block — skip to avoid conflicts with variant columns
           } else {
             shopifyRow[targetKey] = sanitizeText(getColVal(variant, sourceCol));
           }
         }
       } else {
         // ── Child row: only Handle + variant-level fields ──
-        // All product-level fields remain blank; only variant data is written
+        // All product-level fields remain blank; only variant data is written.
+        // Skip Option{N} Name/Value — managed exclusively by the injection block below
         for (const [targetKey, sourceCol] of targetToSource) {
           if (targetKey === "Handle") {
             shopifyRow[targetKey] = handle;
             continue;
           }
+          if (/^Option\d+ (Name|Value)$/.test(targetKey)) {
+            // Handled by the option injection block — skip
+            continue;
+          }
           const isVariantLevel = variantOnlyCols.has(sourceCol)
-            || targetKey.startsWith("Option")
             || targetKey.startsWith("Variant")
             // Image fields are written explicitly below (skip blanking them here)
             || targetKey === "Image Src" || targetKey === "Image Position" || targetKey === "Image Alt Text";
@@ -710,8 +764,19 @@ function applyTitleParsingTransform(
   // Map: base title → array of { row, tokens, optionTypes }
   const productGroups = new Map<string, { row: Record<string, string>; tokens: string[]; optionTypes: string[] }[]>();
 
+  let _titleFallbackIdx = 0;
   for (const row of sourceRows) {
     const fullTitle = String(row[titleCol] ?? "").trim();
+    _titleFallbackIdx++;
+
+    // If the title cell is empty, treat as a standalone product to avoid
+    // merging unrelated blank-title rows into one product group.
+    if (!fullTitle) {
+      const uniqueKey = `__empty_${_titleFallbackIdx}`;
+      productGroups.set(uniqueKey, [{ row, tokens: [], optionTypes: [] }]);
+      continue;
+    }
+
     if (sneakerMode) {
       // Sneaker Mode: only split if the last token is a numeric size.
       // Titles without a trailing numeric size become standalone products.
@@ -770,30 +835,36 @@ function applyTitleParsingTransform(
 
       if (idx === 0) {
         // Parent row: write all product-level fields
+        // Skip Option{N} Name/Value — managed exclusively by the injection block below
         for (const [targetKey, sourceCol] of targetToSource) {
           if (targetKey === "Handle") {
             shopifyRow[targetKey] = handle;
           } else if (targetKey === "Title") {
             // Write base product name (full title when no semantic tokens found)
             shopifyRow[targetKey] = sanitizeText(base);
+          } else if (/^Option\d+ (Name|Value)$/.test(targetKey)) {
+            // Handled by the option injection block — skip
           } else {
             const isVariant = variantLevelTargets.has(targetKey)
               || variantOnlyCols.has(sourceCol)
-              || targetKey.startsWith("Option")
               || targetKey.startsWith("Variant");
             shopifyRow[targetKey] = isVariant ? "" : sanitizeText(getColVal(row, sourceCol));
           }
         }
       } else {
         // Child rows: only Handle + variant-level fields
+        // Skip Option{N} Name/Value — managed exclusively by the injection block below
         for (const [targetKey, sourceCol] of targetToSource) {
           if (targetKey === "Handle") {
             shopifyRow[targetKey] = handle;
             continue;
           }
+          if (/^Option\d+ (Name|Value)$/.test(targetKey)) {
+            // Handled by the option injection block — skip
+            continue;
+          }
           const isVariant = variantLevelTargets.has(targetKey)
             || variantOnlyCols.has(sourceCol)
-            || targetKey.startsWith("Option")
             || targetKey.startsWith("Variant");
           shopifyRow[targetKey] = isVariant ? sanitizeText(getColVal(row, sourceCol)) : "";
         }
@@ -958,4 +1029,261 @@ function expandSplitMappings(
     }
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file variant merge — links parent rows (file A) to child rows (file B)
+// via a prefix/strip rule on a key column, then emits a single Shopify CSV.
+// ---------------------------------------------------------------------------
+
+function deriveParentKeyLocal(
+  childKey: string,
+  stripRule: "numeric_suffix" | `fixed:${number}`
+): string {
+  if (stripRule === "numeric_suffix") {
+    return childKey.replace(/\d+$/, "");
+  }
+  const n = parseInt(stripRule.split(":")[1], 10);
+  return childKey.slice(0, -n);
+}
+
+/**
+ * Merges a parent product file and a child variant file into a single
+ * Shopify-ready CSV download.
+ *
+ * Algorithm:
+ *   1. Build a map of parentKey → parent row using the parent mappings.
+ *   2. For each child row, derive the parent key using the strip rule.
+ *   3. Group child rows by derived parent key.
+ *   4. Emit rows in Shopify format:
+ *        - First row per product: all product fields from parent + variant fields from first child
+ *        - Subsequent rows: only Handle + variant fields from remaining children
+ *   5. Child rows that don't match any parent are emitted as standalone rows.
+ */
+export function exportCrossFileMergedCsv(
+  parentRows: Record<string, string>[],
+  parentMappings: { sourceColumn: string; targetField: { key: string } | null; asMetafield?: boolean }[],
+  childRows: Record<string, string>[],
+  mergeConfig: CrossFileMergeConfig
+): void {
+  const { parentKeyColumn, childKeyColumn, stripRule, variantColumns, outputMode = "new_file" } = mergeConfig;
+
+  // Normalize helper: trim, uppercase, collapse whitespace — makes matching robust
+  const norm = (v: string) => v.trim().toUpperCase().replace(/\s+/g, "");
+
+  // ── MODE: merge_into_parent ──────────────────────────────────────────────
+  // Instead of building a new Shopify CSV, enrich each parent row with the
+  // matched child columns and re-export the parent file with those extra columns.
+  if (outputMode === "merge_into_parent") {
+    // Build normalised-derived-key → child rows[]
+    const childGroups = new Map<string, Record<string, string>[]>();
+    for (const row of childRows) {
+      const childKey = (row[childKeyColumn] || "").toString().trim();
+      const derived = norm(deriveParentKeyLocal(childKey, stripRule));
+      if (!childGroups.has(derived)) childGroups.set(derived, []);
+      childGroups.get(derived)!.push(row);
+    }
+
+    // Build enriched parent rows
+    const enriched: Record<string, string>[] = [];
+    for (const pRow of parentRows) {
+      const key = norm((pRow[parentKeyColumn] || "").toString());
+      const children = childGroups.get(key) || [];
+
+      if (children.length === 0) {
+        // No match — keep parent row as-is, fill variant cols with ""
+        const out = { ...pRow };
+        variantColumns.forEach(({ shopifyField }) => { out[shopifyField] = ""; });
+        // If Variant SKU is one of the variant columns, preserve the parent's own SKU there
+        const hasVariantSku = variantColumns.some(({ shopifyField }) => shopifyField === "Variant SKU");
+        if (hasVariantSku) {
+          const parentSkuCol =
+            Object.keys(pRow).find((k) => /^sku$/i.test(k.trim())) ||
+            Object.keys(pRow).find((k) => /sku/i.test(k.trim()));
+          if (parentSkuCol) {
+            out["Variant SKU"] = pRow[parentSkuCol] || "";
+          }
+        }
+        enriched.push(out);
+      } else {
+        // One output row per matched child, carrying all parent fields
+        const hasVariantSku = variantColumns.some(({ shopifyField }) => shopifyField === "Variant SKU");
+        // Capture Parent SKU once from pRow (before any mutation)
+        // Try exact "SKU" match first, then any column containing "sku"
+        const parentSkuCol = hasVariantSku
+          ? (Object.keys(pRow).find((k) => /^sku$/i.test(k.trim())) ||
+             Object.keys(pRow).find((k) => /sku/i.test(k.trim())))
+          : undefined;
+        const parentSkuVal = parentSkuCol ? (pRow[parentSkuCol] || "") : "";
+
+        children.forEach((child) => {
+          const out = { ...pRow };
+
+          // Inject Parent SKU column
+          if (hasVariantSku) {
+            out["Parent SKU"] = parentSkuVal;
+          }
+
+          // Write child values into the shopify target fields.
+          // Delete the key first so we never carry a stale parent value if
+          // the child lookup is unexpectedly empty.
+          variantColumns.forEach(({ sourceCol, shopifyField }) => {
+            // Try exact key first, then trimmed match in case of whitespace
+            let childVal = child[sourceCol];
+            if (childVal === undefined) {
+              const trimmedKey = Object.keys(child).find((k) => k.trim() === sourceCol.trim());
+              childVal = trimmedKey ? child[trimmedKey] : undefined;
+            }
+            // Remove any parent-inherited value for this field before writing
+            delete out[shopifyField];
+            out[shopifyField] = sanitizeText(childVal ?? "");
+          });
+          enriched.push(out);
+        });
+      }
+    }
+
+    const allKeys = new Set<string>();
+    enriched.forEach((r) => Object.keys(r).forEach((k) => allKeys.add(k)));
+    // Build ordered headers: keep original parent column order, then insert
+    // "Parent SKU" right after the SKU-like column (if present), then append new cols
+    const baseHeaders = Object.keys(parentRows[0] || {}).filter((k) => allKeys.has(k));
+    const extraHeaders = [...allKeys].filter((k) => !baseHeaders.includes(k));
+    // Insert "Parent SKU" right after the SKU-like column in baseHeaders
+    const skuIdx = baseHeaders.findIndex((h) => /^sku$/i.test(h.trim()));
+    const orderedHeaders: string[] = [...baseHeaders];
+    // "Parent SKU" can appear in extraHeaders (new col) or already in baseHeaders (edge case)
+    const parentSkuInExtra = extraHeaders.includes("Parent SKU");
+    const parentSkuInBase = orderedHeaders.includes("Parent SKU");
+    if (parentSkuInExtra) {
+      extraHeaders.splice(extraHeaders.indexOf("Parent SKU"), 1);
+    }
+    if (!parentSkuInBase && (parentSkuInExtra || allKeys.has("Parent SKU"))) {
+      if (skuIdx >= 0) {
+        orderedHeaders.splice(skuIdx + 1, 0, "Parent SKU");
+      } else {
+        orderedHeaders.push("Parent SKU");
+      }
+    }
+    orderedHeaders.push(...extraHeaders);
+    const headers = orderedHeaders;
+
+    const normalised = enriched.map((row) => {
+      const out: Record<string, string> = {};
+      headers.forEach((h) => (out[h] = row[h] ?? ""));
+      return out;
+    });
+
+    const csv = Papa.unparse({ fields: headers, data: normalised });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "merged_into_parent.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+  // ── END merge_into_parent ────────────────────────────────────────────────
+
+  // Build parent-key → parent-row lookup (normalised keys)
+  const parentMap = new Map<string, Record<string, string>>();
+  for (const row of parentRows) {
+    const key = norm((row[parentKeyColumn] || "").toString());
+    if (key) parentMap.set(key, row);
+  }
+
+  // Build map of derived parent key → child rows[] (normalised keys)
+  const childGroups = new Map<string, Record<string, string>[]>();
+  const unmatchedChildren: Record<string, string>[] = [];
+  for (const row of childRows) {
+    const childKey = (row[childKeyColumn] || "").toString().trim();
+    const derived = norm(deriveParentKeyLocal(childKey, stripRule));
+    if (parentMap.has(derived)) {
+      if (!childGroups.has(derived)) childGroups.set(derived, []);
+      childGroups.get(derived)!.push(row);
+    } else {
+      unmatchedChildren.push(row);
+    }
+  }
+
+  // Build targetKey → sourceColumn map for parent
+  const parentTargetToSource = new Map<string, string>();
+  parentMappings.forEach((m) => {
+    if (m.targetField) parentTargetToSource.set(m.targetField.key, m.sourceColumn);
+  });
+
+  const canonicalOrder = SHOPIFY_PRODUCT_FIELDS.map((f) => f.key);
+  const outputRows: Record<string, string>[] = [];
+
+  const getHandleForParent = (parentRow: Record<string, string>): string => {
+    const raw =
+      parentRow[parentTargetToSource.get("Handle") || ""] ||
+      parentRow[parentTargetToSource.get("Title") || ""] ||
+      parentRow[parentKeyColumn] ||
+      "";
+    return titleToHandle(raw.toString().trim());
+  };
+
+  // Emit parent rows that have children
+  for (const [parentKey, pRow] of parentMap.entries()) {
+    const children = childGroups.get(parentKey) || [];
+    const handle = getHandleForParent(pRow);
+
+    if (children.length === 0) {
+      // No variants — emit a flat product row
+      const out: Record<string, string> = { Handle: handle };
+      parentTargetToSource.forEach((srcCol, targetKey) => {
+        if (targetKey !== "Handle") out[targetKey] = sanitizeText(pRow[srcCol] || "");
+      });
+      outputRows.push(out);
+      continue;
+    }
+
+    // First child → product row with all parent fields + variant fields
+    children.forEach((child, idx) => {
+      const out: Record<string, string> = { Handle: handle };
+      if (idx === 0) {
+        parentTargetToSource.forEach((srcCol, targetKey) => {
+          if (targetKey !== "Handle") out[targetKey] = sanitizeText(pRow[srcCol] || "");
+        });
+      }
+      variantColumns.forEach(({ sourceCol, shopifyField }) => {
+        out[shopifyField] = sanitizeText(child[sourceCol] || "");
+      });
+      outputRows.push(out);
+    });
+  }
+
+  // Emit unmatched children as flat rows (best-effort)
+  for (const child of unmatchedChildren) {
+    const childKey = (child[childKeyColumn] || "").toString().trim();
+    const out: Record<string, string> = { Handle: titleToHandle(childKey) };
+    variantColumns.forEach(({ sourceCol, shopifyField }) => {
+      out[shopifyField] = sanitizeText(child[sourceCol] || "");
+    });
+    outputRows.push(out);
+  }
+
+  // Collect all keys and normalise
+  const allKeys = new Set<string>();
+  outputRows.forEach((r) => Object.keys(r).forEach((k) => allKeys.add(k)));
+  const headers = canonicalOrder.filter((k) => allKeys.has(k));
+  // Append any extra keys not in canonical order
+  allKeys.forEach((k) => { if (!headers.includes(k)) headers.push(k); });
+
+  const normalised = outputRows.map((row) => {
+    const out: Record<string, string> = {};
+    headers.forEach((h) => (out[h] = row[h] ?? ""));
+    return out;
+  });
+
+  const csv = Papa.unparse({ fields: headers, data: normalised });
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "shopify_merged_products.csv";
+  a.click();
+  URL.revokeObjectURL(url);
 }
