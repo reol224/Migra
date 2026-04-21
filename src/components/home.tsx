@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText, GitCompare, Link2, Eraser, Upload } from "lucide-react";
+import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText, GitCompare, Link2, Eraser, Upload, TableProperties } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +13,7 @@ import { ColumnSplitModal } from "@/components/ColumnSplitModal";
 import { CompareTab } from "@/components/CompareTab";
 import { QuickPasteModal } from "@/components/QuickPasteModal";
 import { CrossFileMergeModal, CrossFileMergeConfig } from "@/components/CrossFileMergeModal";
+import { DataPlayground } from "@/components/DataPlayground";
 
 import Papa from "papaparse";
 import { parseFile, exportToShopifyCsvWithVariants, exportCrossFileMergedCsv, filterRowsBySku, ParsedFile } from "@/lib/file-parser";
@@ -56,6 +57,8 @@ function Home() {
   const [skuSourceColumn, setSkuSourceColumn] = useState<string | null>(null);
   // Which column in the active (target) file to match against
   const [skuTargetColumn, setSkuTargetColumn] = useState<string | null>(null);
+  // Playground
+  const [playgroundOpen, setPlaygroundOpen] = useState(false);
 
   // Clean file input ref
   const cleanFileInputRef = React.useRef<HTMLInputElement>(null);
@@ -329,6 +332,7 @@ function Home() {
   const fileTypeLabel = (idx: number) => fileTypes[idx] === "customer" ? "customers" : "products";
 
   return (
+    <>
     <div
       className="flex flex-col h-screen overflow-hidden"
       style={{ background: "#0F1117", fontFamily: "IBM Plex Mono, monospace" }}
@@ -660,8 +664,25 @@ function Home() {
             )}
           </button>
 
+          {/* Open in Playground button — only when a file is loaded */}
+          {activeFile && (
+            <button
+              onClick={() => setPlaygroundOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-sm text-xs font-bold transition-all border hover:border-[#96BF4870] active:scale-95"
+              style={{
+                borderColor: "#2A2D3A",
+                backgroundColor: "transparent",
+                color: "#C8CADE",
+                fontFamily: "Syne, sans-serif",
+              }}
+              title="Open the active file in a full spreadsheet playground — edit cells, add/remove rows and columns, then export"
+            >
+              <TableProperties size={12} />
+              Playground
+            </button>
+          )}
+
           <button
-            onClick={canExport ? handleExport : undefined}
             className={cn(
               "flex items-center gap-2 px-4 py-2 rounded-sm text-xs font-bold transition-all",
               canExport ? "active:scale-95 hover:opacity-90" : "opacity-30 cursor-not-allowed"
@@ -1169,6 +1190,18 @@ function Home() {
         </div>
       )}
     </div>
+
+    {/* ── Data Playground overlay ── */}
+    {playgroundOpen && activeFile && (
+      <DataPlayground
+        initialHeaders={activeFile.headers}
+        initialRows={activeFile.rows}
+        fileType={activeFileType}
+        fileName={activeFile.name}
+        onClose={() => setPlaygroundOpen(false)}
+      />
+    )}
+    </>
   );
 }
 
