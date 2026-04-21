@@ -157,15 +157,17 @@ export interface MappingRow {
 
 /**
  * Converts a source column name to a Shopify metafield column name.
- * e.g. "Date of Birth" → "customer.metafields.custom.date_of_birth"
+ * e.g. "Date of Birth" (product) → "products.metafields.custom.date_of_birth"
+ * e.g. "Date of Birth" (customer) → "customer.metafields.custom.date_of_birth"
  */
-export function toMetafieldKey(column: string): string {
+export function toMetafieldKey(column: string, fileType?: string): string {
   const slug = column
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_|_$/g, "");
-  return `customer.metafields.custom.${slug}`;
+  const namespace = fileType === "product" ? "products" : "customer";
+  return `${namespace}.metafields.custom.${slug}`;
 }
 
 // Simple fuzzy match using Fuse.js

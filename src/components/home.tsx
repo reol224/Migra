@@ -867,7 +867,7 @@ function Home() {
             </button>
             {previewOpen && (
               <div className="flex-1 overflow-hidden">
-                <DataPreview rows={activeFile?.previewRows || []} mappings={activeMappings} />
+                <DataPreview rows={activeFile?.previewRows || []} mappings={activeMappings} fileType={activeFileType} />
               </div>
             )}
           </div>

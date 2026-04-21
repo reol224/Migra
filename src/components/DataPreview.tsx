@@ -1,9 +1,11 @@
 import React, { useEffect, useRef } from "react";
 import { MappingRow, titleToHandle, toMetafieldKey } from "@/lib/mapping-utils";
+import { FileType } from "@/lib/shopify-fields";
 
 interface DataPreviewProps {
   rows: Record<string, string>[];
   mappings: MappingRow[];
+  fileType?: FileType;
 }
 
 function isNumericField(key: string) {
@@ -25,7 +27,7 @@ function isValidNumeric(value: unknown) {
   return !isNaN(Number(str.replace(/[$,]/g, "")));
 }
 
-export function DataPreview({ rows, mappings }: DataPreviewProps) {
+export function DataPreview({ rows, mappings, fileType }: DataPreviewProps) {
   const prevMappingsRef = useRef<string>("");
   const flashRef = useRef<HTMLDivElement>(null);
 
@@ -94,7 +96,7 @@ export function DataPreview({ rows, mappings }: DataPreviewProps) {
                 className="px-3 py-2 text-left whitespace-nowrap border-r border-[#2A2D3A] last:border-r-0"
                 style={{ color: "#96BF4880", fontFamily: "IBM Plex Mono, monospace", fontSize: "11px" }}
               >
-                {toMetafieldKey(m.sourceColumn)}
+                {toMetafieldKey(m.sourceColumn, fileType)}
               </th>
             ))}
           </tr>

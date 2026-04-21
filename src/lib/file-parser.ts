@@ -434,8 +434,8 @@ export function exportToShopifyCsv(
   // Filter to only columns that are mapped, preserving canonical template order
   const shopifyHeaders = canonicalOrder.filter((key) => mappingMap.has(key));
 
-  // Build metafield headers: customer.custom.metafield.<slug>
-  const metafieldHeaders = metafieldMappings.map((m) => toMetafieldKey(m.sourceColumn));
+  // Build metafield headers: products.metafields.custom.<slug> or customer.metafields.custom.<slug>
+  const metafieldHeaders = metafieldMappings.map((m) => toMetafieldKey(m.sourceColumn, fileType));
 
   const headers = [...shopifyHeaders, ...metafieldHeaders];
 

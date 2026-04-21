@@ -381,7 +381,7 @@ export function MappingTable({ mappings, onMappingChange, onMetafieldToggle, onS
                         fontSize: "10px",
                       }}
                     >
-                      {toMetafieldKey(row.sourceColumn)}
+                      {toMetafieldKey(row.sourceColumn, fileType)}
                     </span>
                   )}
                   {hasSplit && (
