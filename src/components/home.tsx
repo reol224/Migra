@@ -683,6 +683,8 @@ function Home() {
           )}
 
           <button
+            onClick={handleExport}
+            disabled={!canExport}
             className={cn(
               "flex items-center gap-2 px-4 py-2 rounded-sm text-xs font-bold transition-all",
               canExport ? "active:scale-95 hover:opacity-90" : "opacity-30 cursor-not-allowed"
