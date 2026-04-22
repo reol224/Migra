@@ -6,7 +6,8 @@ import {
   Plus, Trash2, Download, Upload, X, ChevronDown,
   Copy, Search, Filter, SortAsc, SortDesc,
   ArrowLeft, Columns, Type, Hash, Calendar, ToggleLeft,
-  Check, EyeOff,
+  Check, EyeOff, AlertTriangle, ShieldCheck, FlaskConical,
+  CopyX, ClipboardList, Zap, ChevronRight, ImageOff, Link, Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -101,9 +102,10 @@ interface CellProps {
   value: CellValue;
   onCommit: (rowId: string, colId: string, value: string) => void;
   onContextMenu: (e: React.MouseEvent, rowId: string, colId: string) => void;
+  issueMessage?: string;
 }
 
-const Cell = memo(function Cell({ rowId, colId, colType, value, onCommit, onContextMenu }: CellProps) {
+const Cell = memo(function Cell({ rowId, colId, colType, value, onCommit, onContextMenu, issueMessage }: CellProps) {
   const store = useContext(CellStoreCtx)!;
   const isEditing = useSyncExternalStore(
     store.subscribe,
@@ -154,13 +156,20 @@ const Cell = memo(function Cell({ rowId, colId, colType, value, onCommit, onCont
     <td
       className={cn(
         "border-r border-[#2A2D3A] px-0 py-0 relative",
-        isActive && !isEditing && "outline outline-2 outline-[#96BF48] outline-offset-[-2px]"
+        isActive && !isEditing && "outline outline-2 outline-[#96BF48] outline-offset-[-2px]",
+        issueMessage && !isEditing && "bg-[#F5A623]/10"
       )}
       style={{ width: COL_WIDTH }}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
+      title={issueMessage}
     >
+      {issueMessage && !isEditing && (
+        <span className="absolute top-0.5 right-0.5 text-[#F5A623] z-10" title={issueMessage}>
+          <AlertTriangle size={9} />
+        </span>
+      )}
       {isEditing ? (
         <input
           autoFocus
@@ -208,6 +217,8 @@ interface TableRowProps {
   rowIdx: number;
   visibleCols: PlaygroundColumn[];
   isSelected: boolean;
+  isHighlighted: boolean;
+  cellIssues: Record<string, string>;
   onCommitCell: (rowId: string, colId: string, value: string) => void;
   onCellContextMenu: (e: React.MouseEvent, rowId: string, colId: string) => void;
   onRowContextMenu: (e: React.MouseEvent, rowId: string) => void;
@@ -217,7 +228,7 @@ interface TableRowProps {
 }
 
 const TableRow = memo(function TableRow({
-  row, rowIdx, visibleCols, isSelected,
+  row, rowIdx, visibleCols, isSelected, isHighlighted, cellIssues,
   onCommitCell, onCellContextMenu, onRowContextMenu,
   onToggleSelect, onAddRowAfter, onDeleteRow,
 }: TableRowProps) {
@@ -225,11 +236,11 @@ const TableRow = memo(function TableRow({
     <tr
       className={cn(
         "group border-b border-[#2A2D3A]",
-        isSelected ? "bg-[#96BF48]/5" : "hover:bg-[#1A1D27]/60"
+        isHighlighted ? "bg-[#F5A623]/10" : isSelected ? "bg-[#96BF48]/5" : "hover:bg-[#1A1D27]/60"
       )}
       onContextMenu={e => onRowContextMenu(e, row.id)}
     >
-      <td className="border-r border-[#2A2D3A] px-2 py-0 text-center w-10 min-w-[40px]">
+      <td className={cn("border-r border-[#2A2D3A] px-2 py-0 text-center w-10 min-w-[40px]", isHighlighted && "border-l-2 border-l-[#F5A623]")}>
         <div className="flex items-center justify-center gap-1">
           <input
             type="checkbox"
@@ -251,6 +262,7 @@ const TableRow = memo(function TableRow({
           value={row.cells[col.id]}
           onCommit={onCommitCell}
           onContextMenu={onCellContextMenu}
+          issueMessage={cellIssues?.[col.id]}
         />
       ))}
 
@@ -315,6 +327,9 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [filterCol, setFilterCol] = useState<string | null>(null);
   const [filterValue, setFilterValue] = useState("");
+  const [showGoTo, setShowGoTo] = useState(false);
+  const [goToInput, setGoToInput] = useState("");
+  const goToInputRef = useRef<HTMLInputElement>(null);
 
   // Virtual scroll state
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -588,6 +603,52 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
     e.preventDefault();
   }, [cellStore, visibleCols, processedRows]);
 
+  // ── Go To Row (Ctrl+G) ────────────────────────────────────────────────────
+  const goToRow = useCallback((rowNumber: number) => {
+    const idx = rowNumber - 1; // 1-based input → 0-based index
+    if (idx < 0 || idx >= processedRows.length) {
+      toast.error(`Row ${rowNumber} doesn't exist (1–${processedRows.length})`);
+      return;
+    }
+    const targetRow = processedRows[idx];
+    const scrollPos = idx * ROW_HEIGHT;
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollPos;
+    }
+    // Activate the first visible col on that row
+    const firstCol = visibleCols[0];
+    if (firstCol) {
+      cellStore.setState({ activeRow: targetRow.id, activeCol: firstCol.id });
+    }
+    setShowGoTo(false);
+    setGoToInput("");
+  }, [processedRows, visibleCols, cellStore]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "g") {
+        // Don't trigger if user is editing a cell
+        if (cellStore.getSnapshot().editingRow) return;
+        e.preventDefault();
+        setShowGoTo(prev => !prev);
+        setGoToInput("");
+      }
+      if (e.key === "Escape") {
+        setShowGoTo(false);
+        setGoToInput("");
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [cellStore]);
+
+  // Focus input when modal opens
+  useEffect(() => {
+    if (showGoTo) {
+      setTimeout(() => goToInputRef.current?.focus(), 0);
+    }
+  }, [showGoTo]);
+
   // Close context menu on click outside
   useEffect(() => {
     const handler = () => { setContextMenu(null); setShowColMenu(null); };
@@ -614,6 +675,248 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
 
   const hiddenCount = useMemo(() => columns.filter(c => c.hidden).length, [columns]);
   const tableMinWidth = visibleCols.length * COL_WIDTH + 80;
+
+  // ── Analysis panel state ──────────────────────────────────────────────────
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [analysisTab, setAnalysisTab] = useState<"dupes" | "missing" | "types" | "images">("dupes");
+  const [dupeCol, setDupeCol] = useState<string>("");
+  const [missingCols, setMissingCols] = useState<string[]>([]);
+  const [highlightedRows, setHighlightedRows] = useState<Set<string>>(new Set());
+  const [issueMap, setIssueMap] = useState<Record<string, Record<string, string>>>({});
+  // issueMap: rowId -> colId -> message
+
+  // ── Image URL Checker ─────────────────────────────────────────────────────
+  const [imageCol, setImageCol] = useState<string>("");
+  const [imageCheckMode, setImageCheckMode] = useState<"format" | "probe">("format");
+  const [imageChecking, setImageChecking] = useState(false);
+  const [imageResults, setImageResults] = useState<{
+    total: number;
+    empty: number;
+    badFormat: number;
+    broken: number;
+    ok: number;
+    issues: { rowId: string; rowIdx: number; value: string; reason: string }[];
+    affectedRows: Set<string>;
+  } | null>(null);
+
+  // ── Duplicate Detector ───────────────────────────────────────────────────
+  const dupeResults = useMemo(() => {
+    if (!dupeCol) return null;
+    const groups: Record<string, string[]> = {};
+    rows.forEach(row => {
+      const val = String(row.cells[dupeCol] ?? "").trim().toLowerCase();
+      if (!val) return;
+      if (!groups[val]) groups[val] = [];
+      groups[val].push(row.id);
+    });
+    const dupeGroups = Object.entries(groups).filter(([, ids]) => ids.length > 1);
+    const dupeRowIds = new Set(dupeGroups.flatMap(([, ids]) => ids));
+    return { dupeGroups, dupeRowIds, count: dupeRowIds.size };
+  }, [dupeCol, rows]);
+
+  const applyDupeHighlight = useCallback(() => {
+    if (!dupeResults) return;
+    setHighlightedRows(dupeResults.dupeRowIds);
+    const newIssues: Record<string, Record<string, string>> = {};
+    dupeResults.dupeRowIds.forEach(id => {
+      newIssues[id] = { ...(newIssues[id] ?? {}), [dupeCol]: "Duplicate value" };
+    });
+    setIssueMap(newIssues);
+    toast.success(`Found ${dupeResults.count} duplicate rows across ${dupeResults.dupeGroups.length} groups`);
+    setShowAnalysis(false);
+  }, [dupeResults, dupeCol]);
+
+  const selectDupeRows = useCallback(() => {
+    if (!dupeResults) return;
+    setSelectedRows(dupeResults.dupeRowIds);
+    setShowAnalysis(false);
+    toast.success(`Selected ${dupeResults.count} duplicate rows`);
+  }, [dupeResults]);
+
+  // ── Missing Required Fields Audit ────────────────────────────────────────
+  const missingResults = useMemo(() => {
+    if (missingCols.length === 0) return null;
+    const issues: { rowId: string; colId: string; colName: string; rowIdx: number }[] = [];
+    rows.forEach((row, idx) => {
+      missingCols.forEach(colId => {
+        const val = String(row.cells[colId] ?? "").trim();
+        if (!val) {
+          const col = columns.find(c => c.id === colId);
+          issues.push({ rowId: row.id, colId, colName: col?.name ?? colId, rowIdx: idx + 1 });
+        }
+      });
+    });
+    const affectedRows = new Set(issues.map(i => i.rowId));
+    return { issues, affectedRows, count: issues.length };
+  }, [missingCols, rows, columns]);
+
+  const applyMissingHighlight = useCallback(() => {
+    if (!missingResults) return;
+    setHighlightedRows(missingResults.affectedRows);
+    const newIssues: Record<string, Record<string, string>> = {};
+    missingResults.issues.forEach(({ rowId, colId, colName }) => {
+      if (!newIssues[rowId]) newIssues[rowId] = {};
+      newIssues[rowId][colId] = `Missing required: ${colName}`;
+    });
+    setIssueMap(newIssues);
+    toast.success(`Found ${missingResults.count} missing values across ${missingResults.affectedRows.size} rows`);
+    setShowAnalysis(false);
+  }, [missingResults]);
+
+  const selectMissingRows = useCallback(() => {
+    if (!missingResults) return;
+    setSelectedRows(missingResults.affectedRows);
+    setShowAnalysis(false);
+    toast.success(`Selected ${missingResults.affectedRows.size} rows with missing values`);
+  }, [missingResults]);
+
+  // ── Data Type Validator ───────────────────────────────────────────────────
+  const typeResults = useMemo(() => {
+    const issues: { rowId: string; colId: string; colName: string; colType: ColType; value: string; rowIdx: number }[] = [];
+    columns.forEach(col => {
+      if (col.type === "text") return; // text accepts anything
+      rows.forEach((row, idx) => {
+        const val = String(row.cells[col.id] ?? "").trim();
+        if (!val) return; // empty is ok for type check (missing audit handles blanks)
+        let valid = true;
+        if (col.type === "number") valid = !isNaN(Number(val));
+        else if (col.type === "boolean") valid = ["true", "false", "yes", "no", "1", "0", "TRUE", "FALSE"].includes(val);
+        else if (col.type === "date") valid = !isNaN(Date.parse(val)) && (val.includes("-") || val.includes("/"));
+        if (!valid) issues.push({ rowId: row.id, colId: col.id, colName: col.name, colType: col.type, value: val, rowIdx: idx + 1 });
+      });
+    });
+    const affectedRows = new Set(issues.map(i => i.rowId));
+    return { issues, affectedRows, count: issues.length };
+  }, [columns, rows]);
+
+  const applyTypeHighlight = useCallback(() => {
+    setHighlightedRows(typeResults.affectedRows);
+    const newIssues: Record<string, Record<string, string>> = {};
+    typeResults.issues.forEach(({ rowId, colId, colName, colType, value }) => {
+      if (!newIssues[rowId]) newIssues[rowId] = {};
+      newIssues[rowId][colId] = `Expected ${colType}, got: "${value}" in ${colName}`;
+    });
+    setIssueMap(newIssues);
+    toast.success(`Found ${typeResults.count} type mismatch${typeResults.count !== 1 ? "es" : ""} across ${typeResults.affectedRows.size} rows`);
+    setShowAnalysis(false);
+  }, [typeResults]);
+
+  const selectTypeRows = useCallback(() => {
+    setSelectedRows(typeResults.affectedRows);
+    setShowAnalysis(false);
+    toast.success(`Selected ${typeResults.affectedRows.size} rows with type issues`);
+  }, [typeResults]);
+
+  // ── Image URL Checker logic ───────────────────────────────────────────────
+  const URL_REGEX = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
+
+  const runImageCheck = useCallback(async () => {
+    if (!imageCol) return;
+    setImageChecking(true);
+    setImageResults(null);
+
+    const issues: { rowId: string; rowIdx: number; value: string; reason: string }[] = [];
+    const affectedRows = new Set<string>();
+    let empty = 0;
+    let badFormat = 0;
+    let broken = 0;
+    let ok = 0;
+
+    const checks = rows.map((row, rowIdx) => {
+      const raw = String(row.cells[imageCol] ?? "").trim();
+      return { row, rowIdx, raw };
+    });
+
+    for (const { row, rowIdx, raw } of checks) {
+      if (!raw) {
+        empty++;
+        // Don't flag blank cells as issues — they may be intentionally empty
+        continue;
+      }
+
+      // Check format first
+      if (!URL_REGEX.test(raw)) {
+        badFormat++;
+        issues.push({ rowId: row.id, rowIdx: rowIdx + 1, value: raw, reason: "Invalid URL format" });
+        affectedRows.add(row.id);
+        continue;
+      }
+
+      // Check extension / likely image
+      const lower = raw.toLowerCase().split("?")[0];
+      const hasImageExt = /\.(jpg|jpeg|png|gif|webp|svg|avif|bmp|tiff?)(\?|$|#)/i.test(raw)
+        || /\.(jpg|jpeg|png|gif|webp|svg|avif|bmp|tiff?)$/.test(lower);
+      const isShopifyCdn = raw.includes("cdn.shopify.com") || raw.includes("shopifycdn.com");
+
+      if (!hasImageExt && !isShopifyCdn) {
+        // Warn but not error — might still be a valid image URL
+        issues.push({ rowId: row.id, rowIdx: rowIdx + 1, value: raw, reason: "No image extension detected" });
+        affectedRows.add(row.id);
+        badFormat++;
+        continue;
+      }
+
+      if (imageCheckMode === "probe") {
+        try {
+          const img = new Image();
+          const result = await new Promise<"ok" | "broken">((resolve) => {
+            img.onload = () => resolve("ok");
+            img.onerror = () => resolve("broken");
+            img.src = raw;
+            setTimeout(() => resolve("broken"), 5000);
+          });
+          if (result === "broken") {
+            broken++;
+            issues.push({ rowId: row.id, rowIdx: rowIdx + 1, value: raw, reason: "Image failed to load (404 or blocked)" });
+            affectedRows.add(row.id);
+          } else {
+            ok++;
+          }
+        } catch {
+          broken++;
+          issues.push({ rowId: row.id, rowIdx: rowIdx + 1, value: raw, reason: "Image failed to load" });
+          affectedRows.add(row.id);
+        }
+      } else {
+        ok++;
+      }
+    }
+
+    setImageResults({ total: rows.length, empty, badFormat, broken, ok, issues, affectedRows });
+    setImageChecking(false);
+
+    const issueCount = issues.length;
+    if (issueCount === 0) {
+      toast.success("All image URLs look clean!");
+    } else {
+      toast.warning(`Found ${issueCount} image URL issue${issueCount !== 1 ? "s" : ""}`);
+    }
+  }, [imageCol, imageCheckMode, rows]);
+
+  const applyImageHighlight = useCallback(() => {
+    if (!imageResults || imageResults.issues.length === 0) return;
+    const newIssues: Record<string, Record<string, string>> = {};
+    imageResults.issues.forEach(issue => {
+      newIssues[issue.rowId] = { ...(newIssues[issue.rowId] ?? {}), [imageCol]: issue.reason };
+    });
+    setHighlightedRows(imageResults.affectedRows);
+    setIssueMap(newIssues);
+    toast.success(`Highlighted ${imageResults.affectedRows.size} rows with image URL issues`);
+    setShowAnalysis(false);
+  }, [imageResults, imageCol]);
+
+  const selectImageRows = useCallback(() => {
+    if (!imageResults || imageResults.affectedRows.size === 0) return;
+    setSelectedRows(imageResults.affectedRows);
+    setShowAnalysis(false);
+    toast.success(`Selected ${imageResults.affectedRows.size} rows with image URL issues`);
+  }, [imageResults]);
+
+  const clearHighlights = useCallback(() => {
+    setHighlightedRows(new Set());
+    setIssueMap({});
+    toast("Highlights cleared");
+  }, []);
 
   return (
     <CellStoreCtx.Provider value={cellStore}>
@@ -708,6 +1011,21 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
               </button>
             </>
           )}
+          <div className="w-px h-4 bg-[#2A2D3A]" />
+          <button
+            onClick={() => setShowAnalysis(v => !v)}
+            className={`flex items-center gap-1.5 text-[11px] border rounded px-2.5 py-1 transition-colors ${showAnalysis ? "border-[#96BF48]/60 text-[#96BF48] bg-[#96BF48]/10" : "border-[#2A2D3A] text-[#9CA3AF] hover:text-white hover:border-[#4B5563]"}`}
+          >
+            <FlaskConical size={11} /> Analyze
+          </button>
+          {(highlightedRows.size > 0) && (
+            <button
+              onClick={clearHighlights}
+              className="flex items-center gap-1.5 text-[11px] border border-[#F5A623]/40 text-[#F5A623] rounded px-2.5 py-1 hover:bg-[#F5A623]/10 transition-colors"
+            >
+              <X size={11} /> Clear highlights ({highlightedRows.size})
+            </button>
+          )}
           <div className="ml-auto flex items-center gap-3 text-[11px] text-[#4B5563]">
             <span>{processedRows.length} of {rows.length} rows</span>
             <span>{visibleCols.length} columns</span>
@@ -718,6 +1036,306 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
             )}
           </div>
         </div>
+
+        {/* ── Analysis Panel ── */}
+        {showAnalysis && (
+          <div className="border-b border-[#2A2D3A] bg-[#0F1117] flex-shrink-0">
+            {/* Tab bar */}
+            <div className="flex items-center gap-0 px-4 pt-3 border-b border-[#2A2D3A]">
+              {([
+                { id: "dupes", label: "Duplicate Detector", icon: <CopyX size={11} /> },
+                { id: "missing", label: "Missing Fields Audit", icon: <ClipboardList size={11} /> },
+                { id: "types", label: "Data Type Validator", icon: <Zap size={11} /> },
+                { id: "images", label: "Image URL Checker", icon: <ImageOff size={11} /> },
+              ] as const).map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setAnalysisTab(tab.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] border-b-2 transition-colors ${analysisTab === tab.id ? "border-[#96BF48] text-[#96BF48]" : "border-transparent text-[#9CA3AF] hover:text-white"}`}
+                >
+                  {tab.icon}{tab.label}
+                </button>
+              ))}
+              <button onClick={() => setShowAnalysis(false)} className="ml-auto text-[#4B5563] hover:text-white p-1"><X size={12} /></button>
+            </div>
+
+            <div className="px-4 py-3">
+              {/* ── Duplicate Detector ── */}
+              {analysisTab === "dupes" && (
+                <div className="flex items-start gap-4">
+                  <div className="flex-1">
+                    <p className="text-[11px] text-[#9CA3AF] mb-2">Find rows with identical values in a column. Useful for deduplicating SKUs, emails, handles, etc.</p>
+                    <div className="flex items-center gap-2">
+                      <label className="text-[11px] text-[#D1D5DB] whitespace-nowrap">Check column:</label>
+                      <select
+                        value={dupeCol}
+                        onChange={e => setDupeCol(e.target.value)}
+                        className="bg-[#1A1D27] border border-[#2A2D3A] rounded text-[11px] text-white px-2 py-1 focus:outline-none focus:border-[#96BF48]/50"
+                      >
+                        <option value="">— pick a column —</option>
+                        {visibleCols.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    {dupeResults && (
+                      <div className="mt-2 text-[11px]">
+                        {dupeResults.count === 0 ? (
+                          <span className="flex items-center gap-1 text-[#96BF48]"><ShieldCheck size={11} /> No duplicates found — data looks clean!</span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-[#F5A623]">
+                            <AlertTriangle size={11} /> {dupeResults.count} duplicate rows in {dupeResults.dupeGroups.length} groups
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {dupeResults && dupeResults.count > 0 && (
+                      <div className="mt-2 max-h-28 overflow-y-auto border border-[#2A2D3A] rounded">
+                        {dupeResults.dupeGroups.slice(0, 20).map(([val, ids]) => (
+                          <div key={val} className="flex items-center gap-2 px-2 py-1 border-b border-[#2A2D3A] last:border-0">
+                            <ChevronRight size={9} className="text-[#4B5563]" />
+                            <span className="text-[#96BF48] text-[10px] font-mono truncate max-w-[200px]">"{val}"</span>
+                            <span className="text-[#4B5563] text-[10px]">{ids.length}×</span>
+                          </div>
+                        ))}
+                        {dupeResults.dupeGroups.length > 20 && (
+                          <div className="px-2 py-1 text-[10px] text-[#4B5563]">…and {dupeResults.dupeGroups.length - 20} more groups</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5 mt-6">
+                    <button onClick={applyDupeHighlight} disabled={!dupeResults || dupeResults.count === 0} className="flex items-center gap-1.5 text-[11px] border border-[#F5A623]/40 text-[#F5A623] rounded px-3 py-1.5 hover:bg-[#F5A623]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                      <AlertTriangle size={11} /> Highlight rows
+                    </button>
+                    <button onClick={selectDupeRows} disabled={!dupeResults || dupeResults.count === 0} className="flex items-center gap-1.5 text-[11px] border border-[#2A2D3A] text-[#9CA3AF] rounded px-3 py-1.5 hover:text-white hover:border-[#4B5563] disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                      <Check size={11} /> Select rows
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Missing Required Fields Audit ── */}
+              {analysisTab === "missing" && (
+                <div className="flex items-start gap-4">
+                  <div className="flex-1">
+                    <p className="text-[11px] text-[#9CA3AF] mb-2">Mark columns as required and find all rows with blank values. Perfect for catching missing Titles, Handles, Prices, or Emails.</p>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {visibleCols.map(c => (
+                        <button
+                          key={c.id}
+                          onClick={() => setMissingCols(prev => prev.includes(c.id) ? prev.filter(id => id !== c.id) : [...prev, c.id])}
+                          className={`flex items-center gap-1 text-[10px] border rounded px-2 py-0.5 transition-colors ${missingCols.includes(c.id) ? "border-[#96BF48]/60 text-[#96BF48] bg-[#96BF48]/10" : "border-[#2A2D3A] text-[#9CA3AF] hover:border-[#4B5563] hover:text-white"}`}
+                        >
+                          {missingCols.includes(c.id) && <Check size={9} />}
+                          {c.name}
+                        </button>
+                      ))}
+                    </div>
+                    {missingCols.length === 0 && (
+                      <p className="text-[10px] text-[#4B5563]">Click column names above to mark them as required.</p>
+                    )}
+                    {missingResults && (
+                      <div className="mt-1 text-[11px]">
+                        {missingResults.count === 0 ? (
+                          <span className="flex items-center gap-1 text-[#96BF48]"><ShieldCheck size={11} /> All required fields are filled — no missing values!</span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-[#F5A623]">
+                            <AlertTriangle size={11} /> {missingResults.count} missing value{missingResults.count !== 1 ? "s" : ""} across {missingResults.affectedRows.size} rows
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {missingResults && missingResults.count > 0 && (
+                      <div className="mt-2 max-h-28 overflow-y-auto border border-[#2A2D3A] rounded">
+                        {missingResults.issues.slice(0, 30).map((issue, i) => (
+                          <div key={i} className="flex items-center gap-2 px-2 py-1 border-b border-[#2A2D3A] last:border-0">
+                            <span className="text-[#4B5563] text-[10px] w-10 text-right">R{issue.rowIdx}</span>
+                            <span className="text-[#F5A623] text-[10px]">{issue.colName}</span>
+                            <span className="text-[#4B5563] text-[10px]">is empty</span>
+                          </div>
+                        ))}
+                        {missingResults.issues.length > 30 && (
+                          <div className="px-2 py-1 text-[10px] text-[#4B5563]">…and {missingResults.issues.length - 30} more</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5 mt-6">
+                    <button onClick={applyMissingHighlight} disabled={!missingResults || missingResults.count === 0} className="flex items-center gap-1.5 text-[11px] border border-[#F5A623]/40 text-[#F5A623] rounded px-3 py-1.5 hover:bg-[#F5A623]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                      <AlertTriangle size={11} /> Highlight rows
+                    </button>
+                    <button onClick={selectMissingRows} disabled={!missingResults || missingResults.count === 0} className="flex items-center gap-1.5 text-[11px] border border-[#2A2D3A] text-[#9CA3AF] rounded px-3 py-1.5 hover:text-white hover:border-[#4B5563] disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                      <Check size={11} /> Select rows
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Data Type Validator ── */}
+              {analysisTab === "types" && (
+                <div className="flex items-start gap-4">
+                  <div className="flex-1">
+                    <p className="text-[11px] text-[#9CA3AF] mb-2">Validates every cell against its column type. Catches non-numeric prices, invalid dates, bad boolean values, etc. Set column types via the column header menu.</p>
+                    <div className="text-[11px] mt-1">
+                      {typeResults.count === 0 ? (
+                        <span className="flex items-center gap-1 text-[#96BF48]"><ShieldCheck size={11} /> All values match their column types — data looks clean!</span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[#F5A623]">
+                          <AlertTriangle size={11} /> {typeResults.count} type mismatch{typeResults.count !== 1 ? "es" : ""} across {typeResults.affectedRows.size} rows
+                        </span>
+                      )}
+                    </div>
+                    {typeResults.count > 0 && (
+                      <div className="mt-2 max-h-28 overflow-y-auto border border-[#2A2D3A] rounded">
+                        {typeResults.issues.slice(0, 30).map((issue, i) => (
+                          <div key={i} className="flex items-center gap-2 px-2 py-1 border-b border-[#2A2D3A] last:border-0">
+                            <span className="text-[#4B5563] text-[10px] w-10 text-right">R{issue.rowIdx}</span>
+                            <span className="text-[#D1D5DB] text-[10px]">{issue.colName}</span>
+                            <span className="text-[#4B5563] text-[10px]">expects</span>
+                            <span className="text-[#96BF48] text-[10px] font-mono">{issue.colType}</span>
+                            <span className="text-[#4B5563] text-[10px]">got</span>
+                            <span className="text-[#E05C5C] text-[10px] font-mono truncate max-w-[120px]">"{issue.value}"</span>
+                          </div>
+                        ))}
+                        {typeResults.issues.length > 30 && (
+                          <div className="px-2 py-1 text-[10px] text-[#4B5563]">…and {typeResults.issues.length - 30} more</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5 mt-6">
+                    <button onClick={applyTypeHighlight} disabled={typeResults.count === 0} className="flex items-center gap-1.5 text-[11px] border border-[#F5A623]/40 text-[#F5A623] rounded px-3 py-1.5 hover:bg-[#F5A623]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                      <AlertTriangle size={11} /> Highlight rows
+                    </button>
+                    <button onClick={selectTypeRows} disabled={typeResults.count === 0} className="flex items-center gap-1.5 text-[11px] border border-[#2A2D3A] text-[#9CA3AF] rounded px-3 py-1.5 hover:text-white hover:border-[#4B5563] disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                      <Check size={11} /> Select rows
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Image URL Checker ── */}
+              {analysisTab === "images" && (
+                <div className="flex items-start gap-4">
+                  <div className="flex-1">
+                    <p className="text-[11px] text-[#9CA3AF] mb-3">
+                      Validates image URLs in a column — checks format, file extension, and optionally probes whether each image actually loads.
+                    </p>
+
+                    {/* Column picker + mode */}
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-[#4B5563] uppercase tracking-wider">Image Column</label>
+                        <select
+                          value={imageCol}
+                          onChange={e => { setImageCol(e.target.value); setImageResults(null); }}
+                          className="bg-[#0F1117] border border-[#2A2D3A] text-[#D1D5DB] text-[11px] rounded px-2 py-1 focus:outline-none focus:border-[#96BF48]/60 min-w-[160px]"
+                        >
+                          <option value="">— pick a column —</option>
+                          {columns.map(col => (
+                            <option key={col.id} value={col.id}>{col.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-[#4B5563] uppercase tracking-wider">Check Mode</label>
+                        <div className="flex rounded border border-[#2A2D3A] overflow-hidden text-[11px]">
+                          <button
+                            onClick={() => setImageCheckMode("format")}
+                            className={`px-3 py-1 transition-colors ${imageCheckMode === "format" ? "bg-[#96BF48]/15 text-[#96BF48] border-r border-[#2A2D3A]" : "text-[#9CA3AF] hover:text-white border-r border-[#2A2D3A]"}`}
+                          >
+                            Format only
+                          </button>
+                          <button
+                            onClick={() => setImageCheckMode("probe")}
+                            className={`px-3 py-1 transition-colors ${imageCheckMode === "probe" ? "bg-[#96BF48]/15 text-[#96BF48]" : "text-[#9CA3AF] hover:text-white"}`}
+                          >
+                            + Probe URLs
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={runImageCheck}
+                        disabled={!imageCol || imageChecking}
+                        className="flex items-center gap-1.5 text-[11px] border border-[#96BF48]/50 text-[#96BF48] rounded px-3 py-1.5 hover:bg-[#96BF48]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors mt-4"
+                      >
+                        {imageChecking ? <Loader2 size={11} className="animate-spin" /> : <Link size={11} />}
+                        {imageChecking ? "Checking…" : "Run Check"}
+                      </button>
+                    </div>
+
+                    {imageCheckMode === "probe" && (
+                      <div className="flex items-center gap-1.5 mb-3 text-[10px] text-[#F5A623] border border-[#F5A623]/20 rounded px-2 py-1.5 bg-[#F5A623]/5">
+                        <AlertTriangle size={10} /> Probe mode loads each image to check if it exists. May be slow for large datasets and can be blocked by CORS.
+                      </div>
+                    )}
+
+                    {/* Results summary */}
+                    {imageResults && (
+                      <div>
+                        <div className="flex items-center gap-4 mb-2 text-[11px]">
+                          <span className="text-[#4B5563]">Total: <span className="text-white">{imageResults.total}</span></span>
+                          <span className="text-[#4B5563]">Empty: <span className="text-[#9CA3AF]">{imageResults.empty}</span></span>
+                          <span className="text-[#4B5563]">Bad format: <span className="text-[#F5A623]">{imageResults.badFormat}</span></span>
+                          {imageCheckMode === "probe" && (
+                            <span className="text-[#4B5563]">Broken: <span className="text-[#E05C5C]">{imageResults.broken}</span></span>
+                          )}
+                          <span className="text-[#4B5563]">OK: <span className="text-[#96BF48]">{imageResults.ok}</span></span>
+                        </div>
+
+                        {imageResults.issues.length === 0 ? (
+                          <span className="flex items-center gap-1 text-[11px] text-[#96BF48]">
+                            <ShieldCheck size={11} /> All image URLs look valid — no issues found!
+                          </span>
+                        ) : (
+                          <div className="max-h-32 overflow-y-auto border border-[#2A2D3A] rounded">
+                            {imageResults.issues.slice(0, 40).map((issue, i) => (
+                              <div key={i} className="flex items-start gap-2 px-2 py-1 border-b border-[#2A2D3A] last:border-0">
+                                <span className="text-[#4B5563] text-[10px] w-10 text-right flex-shrink-0">R{issue.rowIdx}</span>
+                                <span className={`text-[10px] flex-shrink-0 ${issue.reason.includes("broken") || issue.reason.includes("failed") ? "text-[#E05C5C]" : "text-[#F5A623]"}`}>
+                                  {issue.reason.includes("broken") || issue.reason.includes("failed") ? "✗" : "⚠"}
+                                </span>
+                                <span className="text-[#D1D5DB] text-[10px] flex-shrink-0">{issue.reason}</span>
+                                <span className="text-[#4B5563] text-[10px] font-mono truncate max-w-[220px]">{issue.value}</span>
+                              </div>
+                            ))}
+                            {imageResults.issues.length > 40 && (
+                              <div className="px-2 py-1 text-[10px] text-[#4B5563]">…and {imageResults.issues.length - 40} more</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {!imageResults && !imageChecking && !imageCol && (
+                      <div className="flex items-center gap-2 text-[11px] text-[#4B5563]">
+                        <ImageOff size={12} /> Select an image column and run the check to get started.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 mt-6">
+                    <button
+                      onClick={applyImageHighlight}
+                      disabled={!imageResults || imageResults.issues.length === 0}
+                      className="flex items-center gap-1.5 text-[11px] border border-[#F5A623]/40 text-[#F5A623] rounded px-3 py-1.5 hover:bg-[#F5A623]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                    >
+                      <AlertTriangle size={11} /> Highlight rows
+                    </button>
+                    <button
+                      onClick={selectImageRows}
+                      disabled={!imageResults || imageResults.affectedRows.size === 0}
+                      className="flex items-center gap-1.5 text-[11px] border border-[#2A2D3A] text-[#9CA3AF] rounded px-3 py-1.5 hover:text-white hover:border-[#4B5563] disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                    >
+                      <Check size={11} /> Select rows
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── Stats bar ── */}
         {stats && (
@@ -840,6 +1458,8 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
                     rowIdx={startIdx + i}
                     visibleCols={visibleCols}
                     isSelected={selectedRows.has(row.id)}
+                    isHighlighted={highlightedRows.has(row.id)}
+                    cellIssues={issueMap[row.id] ?? {}}
                     onCommitCell={handleCommitCell}
                     onCellContextMenu={handleCellContextMenu}
                     onRowContextMenu={handleRowContextMenu}
@@ -892,10 +1512,65 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
           <span><kbd className="bg-[#2A2D3A] px-1 rounded">Double-click</kbd> to edit</span>
           <span><kbd className="bg-[#2A2D3A] px-1 rounded">Enter</kbd> confirm · <kbd className="bg-[#2A2D3A] px-1 rounded">Esc</kbd> cancel</span>
           <span><kbd className="bg-[#2A2D3A] px-1 rounded">Ctrl+V</kbd> paste from clipboard / Excel</span>
+          <span><kbd className="bg-[#2A2D3A] px-1 rounded">Ctrl+G</kbd> go to row</span>
           <span>Drag column headers to reorder</span>
           <span>Right-click for context menu</span>
           <span className="ml-auto">{startIdx + 1}–{Math.min(endIdx, processedRows.length)} / {processedRows.length} rows rendered</span>
         </div>
+
+        {/* ── Go To Row modal ── */}
+        {showGoTo && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center"
+            style={{ background: "rgba(0,0,0,0.55)" }}
+            onClick={() => { setShowGoTo(false); setGoToInput(""); }}
+          >
+            <div
+              className="bg-[#1A1D27] border border-[#2A2D3A] rounded-lg shadow-2xl p-5 w-72 flex flex-col gap-4"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-white text-[13px] font-semibold" style={{ fontFamily: "Syne, sans-serif" }}>Go to Row</span>
+                <span className="text-[10px] text-[#4B5563]">of {processedRows.length}</span>
+              </div>
+              <input
+                ref={goToInputRef}
+                type="number"
+                min={1}
+                max={processedRows.length}
+                value={goToInput}
+                onChange={e => setGoToInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter") {
+                    const n = parseInt(goToInput, 10);
+                    if (!isNaN(n)) goToRow(n);
+                  }
+                  if (e.key === "Escape") { setShowGoTo(false); setGoToInput(""); }
+                }}
+                placeholder={`1 – ${processedRows.length}`}
+                className="bg-[#0F1117] border border-[#2A2D3A] focus:border-[#96BF48]/60 rounded px-3 py-2 text-[13px] text-white font-mono focus:outline-none w-full placeholder-[#4B5563]"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    const n = parseInt(goToInput, 10);
+                    if (!isNaN(n)) goToRow(n);
+                  }}
+                  disabled={!goToInput || isNaN(parseInt(goToInput, 10))}
+                  className="flex-1 bg-[#96BF48] text-[#0F1117] text-[12px] font-semibold rounded px-3 py-1.5 hover:bg-[#a8d44f] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  Jump
+                </button>
+                <button
+                  onClick={() => { setShowGoTo(false); setGoToInput(""); }}
+                  className="px-3 py-1.5 text-[12px] text-[#9CA3AF] border border-[#2A2D3A] rounded hover:text-white hover:border-[#4B5563] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </CellStoreCtx.Provider>
   );
