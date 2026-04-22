@@ -229,8 +229,9 @@ export function autoMapColumns(sourceColumns: string[], fileType?: FileType): Ma
  * Size suffixes (W = women's, Y = youth, C = children's) are preserved as-is (lowercased).
  * Decimal points are stripped (10.5 → 105) since dots are not URL-safe in handles.
  */
-export function titleToHandle(title: string): string {
-  return title
+export function titleToHandle(title: unknown): string {
+  const str = title == null ? "" : String(title);
+  return str
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9\s-]/g, "")   // remove non-alphanumeric (keep spaces, hyphens, letters, digits — preserves w/y size suffixes)

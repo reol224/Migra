@@ -300,17 +300,27 @@ function Home() {
       }
     }
 
-    exportToShopifyCsvWithVariants(rowsToExport, activeMappings, activeFileType, variantConfig);
-    toast.success(
-      `Exported ${rowsToExport.length.toLocaleString()} rows as Shopify CSV`,
-      {
-        style: {
-          background: "#1A1D27",
-          border: "1px solid #96BF4840",
-          color: "#96BF48",
-        },
-      }
-    );
+    try {
+      exportToShopifyCsvWithVariants(rowsToExport, activeMappings, activeFileType, variantConfig);
+      toast.success(
+        `Exported ${rowsToExport.length.toLocaleString()} rows as Shopify CSV`,
+        {
+          style: {
+            background: "#1A1D27",
+            border: "1px solid #96BF4840",
+            color: "#96BF48",
+          },
+        }
+      );
+    } catch (err) {
+      console.error("[Export error]", err);
+      toast.error(
+        `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+        {
+          style: { background: "#1A1D27", border: "1px solid #E05C5C40", color: "#E05C5C" },
+        }
+      );
+    }
   };
 
   const handleMergeExport = (config: CrossFileMergeConfig) => {

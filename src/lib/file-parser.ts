@@ -460,9 +460,9 @@ export function exportToShopifyCsv(
       let val = resolveValue(sourceRef, row);
 
       if (key === "Handle") {
-        val = val ? titleToHandle(val) : "";
+        val = val != null && val !== "" ? titleToHandle(String(val)) : "";
         if (!val && titleMapping && sourceRef === titleMapping.sourceColumn) {
-          val = titleToHandle(row[titleMapping.sourceColumn] || "");
+          val = titleToHandle(String(row[titleMapping.sourceColumn] || ""));
         }
       }
 
@@ -492,8 +492,10 @@ export function exportToShopifyCsv(
   const a = document.createElement("a");
   a.href = url;
   a.download = fileType === "customer" ? "shopify_customers.csv" : "shopify_products.csv";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +619,7 @@ export function applyVariantTransform(
     const parentRow = variants[0];
 
     // Helper: get the handle value for this product
-    const rawHandle = parentRow[handleSourceCol] ?? parentRow[groupByColumn] ?? "";
+    const rawHandle = String(parentRow[handleSourceCol] ?? parentRow[groupByColumn] ?? "");
     const handle = titleToHandle(rawHandle);
 
     variants.forEach((variant, idx) => {
@@ -982,11 +984,26 @@ export function exportToShopifyCsvWithVariants(
 
   const transformedRows = applyVariantTransform(rows, expandedMappings, variantConfig, fileType);
 
+  if (transformedRows.length === 0) {
+    // Nothing to export after transform — fall back to raw rows
+    exportToShopifyCsv(rows, mappings, fileType);
+    return;
+  }
+
   // Collect all keys that appear in the transformed rows (maintain Shopify order)
   const canonicalOrder = SHOPIFY_PRODUCT_FIELDS.map((f) => f.key);
   const allKeys = new Set<string>();
   transformedRows.forEach((r) => Object.keys(r).forEach((k) => allKeys.add(k)));
-  const headers = canonicalOrder.filter((k) => allKeys.has(k));
+  // Include all emitted keys — canonical ones first, then any extras (e.g. metafields)
+  const canonicalHeaders = canonicalOrder.filter((k) => allKeys.has(k));
+  const extraHeaders = [...allKeys].filter((k) => !canonicalOrder.includes(k));
+  const headers = [...canonicalHeaders, ...extraHeaders];
+
+  if (headers.length === 0) {
+    // No recognisable headers — fall back to flat export
+    exportToShopifyCsv(rows, mappings, fileType);
+    return;
+  }
 
   // Normalise: ensure every row has all headers
   const normalised = transformedRows.map((row) => {
@@ -996,13 +1013,15 @@ export function exportToShopifyCsvWithVariants(
   });
 
   const csv = Papa.unparse({ fields: headers, data: normalised });
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = "shopify_products.csv";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
