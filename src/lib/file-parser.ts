@@ -229,13 +229,6 @@ export async function parseFile(
   throw new Error("Unsupported file format. Please upload a CSV or Excel file.");
 }
 
-/**
- * Returns true if a row is "ghost" — every cell is empty or whitespace-only.
- */
-function isGhostRow(row: Record<string, string>, headers: string[]): boolean {
-  return headers.every((h) => (row[h] ?? "").toString().trim() === "");
-}
-
 function parseCsv(
   file: File,
   onProgress?: ParseProgressCallback
@@ -243,32 +236,44 @@ function parseCsv(
   return new Promise((resolve, reject) => {
     const allRows: Record<string, string>[] = [];
     let headers: string[] = [];
+    const populatedHeaders = new Set<string>();
     const fileSize = file.size;
+    let lastProgressReport = 0;
 
     Papa.parse<Record<string, string>>(file, {
       header: true,
       // "greedy" skips lines that are entirely empty or contain only delimiters
       skipEmptyLines: "greedy",
-      worker: false,
+      // Keep CSV tokenization off the UI thread, even for very large files.
+      worker: true,
       chunk: (results, _parser) => {
         if (headers.length === 0 && results.meta.fields) {
           headers = results.meta.fields;
         }
         for (const row of results.data) {
-          if (!isGhostRow(row, headers)) {
-            allRows.push(row);
+          let hasValue = false;
+          for (const header of headers) {
+            const value = row[header];
+            if (value !== undefined && value !== null && String(value).trim() !== "") {
+              hasValue = true;
+              populatedHeaders.add(header);
+            }
           }
+          if (hasValue) allRows.push(row);
         }
         if (onProgress && fileSize > 0) {
-          // Heuristic: estimate progress from row count vs estimated total
-          const estimatedTotal = Math.max(fileSize / 80, allRows.length + 1);
-          const pct = Math.min(95, Math.round((allRows.length / estimatedTotal) * 100));
-          onProgress(pct, allRows.length);
+          const pct = Math.min(99, Math.floor((results.meta.cursor / fileSize) * 100));
+          if (pct > lastProgressReport) {
+            lastProgressReport = pct;
+            onProgress(pct, allRows.length);
+          }
         }
       },
       complete: () => {
-        // Apply ghost row + ghost column cleanup (same as Excel path)
-        const { headers: cleanHeaders, rows: cleanRows } = removeGhostData(headers, allRows);
+        // Rows and populated columns were tracked during streaming, avoiding
+        // multiple full-dataset scans after a 50k+ row import.
+        const cleanHeaders = headers.filter((header) => populatedHeaders.has(header));
+        const cleanRows = projectRows(allRows, cleanHeaders);
         onProgress?.(100, cleanRows.length);
         const previewRows = cleanRows.slice(0, 50);
         resolve({
@@ -281,6 +286,17 @@ function parseCsv(
       },
       error: reject,
     });
+  });
+}
+
+function projectRows(
+  rows: Record<string, string>[],
+  headers: string[]
+): Record<string, string>[] {
+  return rows.map((row) => {
+    const projected: Record<string, string> = {};
+    for (const header of headers) projected[header] = row[header] ?? "";
+    return projected;
   });
 }
 
@@ -301,26 +317,23 @@ function removeGhostData(
   rawHeaders: string[],
   rawRows: Record<string, string>[]
 ): { headers: string[]; rows: Record<string, string>[] } {
-  // ── 1. Drop all-empty rows ─────────────────────────────────────────────────
-  const trimmedRows = rawRows.filter(
-    (row) => rawHeaders.some((h) => (row[h] ?? "").toString().trim() !== "")
-  );
+  // Scan every cell once to find the populated columns and reject blank rows.
+  const populatedHeaders = new Set<string>();
+  const trimmedRows: Record<string, string>[] = [];
+  for (const row of rawRows) {
+    let hasValue = false;
+    for (const header of rawHeaders) {
+      const value = row[header];
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        hasValue = true;
+        populatedHeaders.add(header);
+      }
+    }
+    if (hasValue) trimmedRows.push(row);
+  }
 
-  // ── 2. Drop ghost columns ──────────────────────────────────────────────────
-  // Keep a column only if at least one row has a non-empty value in it.
-  // This removes both:
-  //   • Auto-named blank columns (__EMPTY, Column1, blank header, etc.)
-  //   • Real-named columns that are entirely empty across all rows
-  const cleanHeaders = rawHeaders.filter((header) =>
-    trimmedRows.some((row) => (row[header] ?? "").toString().trim() !== "")
-  );
-
-  // ── 3. Re-project rows to only include surviving headers ───────────────────
-  const cleanRows = trimmedRows.map((row) => {
-    const out: Record<string, string> = {};
-    cleanHeaders.forEach((h) => { out[h] = row[h] ?? ""; });
-    return out;
-  });
+  const cleanHeaders = rawHeaders.filter((header) => populatedHeaders.has(header));
+  const cleanRows = projectRows(trimmedRows, cleanHeaders);
 
   return { headers: cleanHeaders, rows: cleanRows };
 }

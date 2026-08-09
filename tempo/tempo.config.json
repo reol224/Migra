@@ -1,0 +1,14 @@
+{
+  "paths": {
+    "canvases": "./designs"
+  },
+  "scripts": {
+    "install": "cd .. && npm install && cd tempo && npm install",
+    "start": "npm run dev"
+  },
+  "apps": [
+    {
+      "appStart": "npx --yes node@20.19.0 node_modules/vite/bin/vite.js --port=${PORT}"
+    }
+  ]
+}
