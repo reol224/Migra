@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { Download, ChevronUp, ChevronDown, Layers, Package, Users, FileText, GitCompare, Link2, Eraser, Upload, TableProperties } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -25,10 +25,19 @@ import {
   ColumnSplitConfig,
 } from "@/lib/mapping-utils";
 import { ShopifyField, FileType } from "@/lib/shopify-fields";
+import { clearLocalSession, loadLocalSession, saveLocalSession } from "@/lib/session-storage";
 
 interface PendingFile {
   parsed: ParsedFile;
   resolve: (type: FileType) => void;
+}
+
+interface SavedSession {
+  files: ParsedFile[];
+  fileTypes: FileType[];
+  activeFileIndex: number;
+  mappingsPerFile: MappingRow[][];
+  variantConfigPerFile: (VariantConfig | null)[];
 }
 
 function Home() {
@@ -59,6 +68,8 @@ function Home() {
   const [skuTargetColumn, setSkuTargetColumn] = useState<string | null>(null);
   // Playground
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
+  const [savedSession, setSavedSession] = useState<SavedSession | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
 
   // Clean file input ref
   const cleanFileInputRef = React.useRef<HTMLInputElement>(null);
@@ -67,6 +78,34 @@ function Home() {
   const activeMappings = mappingsPerFile[activeFileIndex] || [];
   const activeFile = files[activeFileIndex];
   const activeFileType = fileTypes[activeFileIndex];
+
+  useEffect(() => {
+    loadLocalSession<SavedSession>().then(setSavedSession).catch(() => undefined).finally(() => setSessionReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!sessionReady || !files.length) return;
+    const timer = window.setTimeout(() => {
+      saveLocalSession({ files, fileTypes, activeFileIndex, mappingsPerFile, variantConfigPerFile }).catch(() => undefined);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [sessionReady, files, fileTypes, activeFileIndex, mappingsPerFile, variantConfigPerFile]);
+
+  const restoreSavedSession = useCallback(() => {
+    if (!savedSession) return;
+    setFiles(savedSession.files);
+    setFileTypes(savedSession.fileTypes);
+    setActiveFileIndex(savedSession.activeFileIndex);
+    setMappingsPerFile(savedSession.mappingsPerFile);
+    setVariantConfigPerFile(savedSession.variantConfigPerFile);
+    setSavedSession(null);
+    toast.success("Saved migration session restored");
+  }, [savedSession]);
+
+  const discardSavedSession = useCallback(() => {
+    clearLocalSession().catch(() => undefined);
+    setSavedSession(null);
+  }, []);
 
   /** Upload any CSV/Excel, strip ghost rows & columns (Column1, __EMPTY, etc.), download cleaned CSV */
   const handleCleanFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -157,6 +196,12 @@ function Home() {
       return prev;
     });
   }, []);
+
+  const handlePlaygroundDataChange = useCallback((headers: string[], rows: Record<string, string>[]) => {
+    setFiles((previous) => previous.map((file, index) => index === activeFileIndex
+      ? { ...file, headers, rows, rowCount: rows.length, previewRows: rows.slice(0, 50) }
+      : file));
+  }, [activeFileIndex]);
 
   const handleQuickPasteData = useCallback(
     async (headers: string[], rows: Record<string, string>[]) => {
@@ -355,6 +400,21 @@ function Home() {
         ::-webkit-scrollbar-thumb { background: #2A2D3A; border-radius: 2px; }
         ::-webkit-scrollbar-thumb:hover { background: #3A3D4A; }
       `}</style>
+
+      {savedSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(15,17,23,0.85)", backdropFilter: "blur(4px)" }}>
+          <div className="flex flex-col gap-4 p-8 rounded-sm border" style={{ background: "#1A1D27", borderColor: "#2A2D3A", width: 380 }}>
+            <div>
+              <p className="text-sm font-bold" style={{ color: "#C8CADE", fontFamily: "Syne, sans-serif" }}>Restore saved session?</p>
+              <p className="text-xs mt-2" style={{ color: "#9095A5" }}>Continue where you left off with {savedSession.files.length} saved file{savedSession.files.length === 1 ? "" : "s"}.</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={discardSavedSession} className="px-3 py-2 rounded-sm border text-xs" style={{ borderColor: "#2A2D3A", color: "#9095A5" }}>Discard</button>
+              <button onClick={restoreSavedSession} className="px-3 py-2 rounded-sm text-xs font-bold" style={{ background: "#96BF48", color: "#0F1117" }}>Restore session</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Parse progress overlay */}
       {parseProgress && (
@@ -1211,6 +1271,7 @@ function Home() {
         fileType={activeFileType}
         fileName={activeFile.name}
         onClose={() => setPlaygroundOpen(false)}
+        onDataChange={handlePlaygroundDataChange}
       />
     )}
     </>

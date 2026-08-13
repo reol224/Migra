@@ -36,6 +36,7 @@ interface DataPlaygroundProps {
   fileType?: "product" | "customer";
   fileName?: string;
   onClose: () => void;
+  onDataChange?: (headers: string[], rows: Record<string, string>[]) => void;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -289,7 +290,7 @@ const TableRow = memo(function TableRow({
 });
 
 // ─── Component ───────────────────────────────────────────────────────────────
-export function DataPlayground({ initialHeaders = [], initialRows = [], fileType, fileName, onClose }: DataPlaygroundProps) {
+export function DataPlayground({ initialHeaders = [], initialRows = [], fileType, fileName, onClose, onDataChange }: DataPlaygroundProps) {
   // Build initial state once
   const init = useMemo(() => {
     const headerToId: Record<string, string> = {};
@@ -309,6 +310,16 @@ export function DataPlayground({ initialHeaders = [], initialRows = [], fileType
 
   const [columns, setColumns] = useState<PlaygroundColumn[]>(init.cols);
   const [rows, setRows] = useState<PlaygroundRow[]>(init.rows);
+
+  useEffect(() => {
+    if (!onDataChange) return;
+    const headers = columns.map((column) => column.name);
+    onDataChange(headers, rows.map((row) => {
+      const values: Record<string, string> = {};
+      for (const column of columns) values[column.name] = String(row.cells[column.id] ?? "");
+      return values;
+    }));
+  }, [columns, rows, onDataChange]);
 
   // Cell store — replaces prop-drilled editing/active state
   const cellStore = useMemo(() => createCellStore(), []);
