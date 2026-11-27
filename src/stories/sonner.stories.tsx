@@ -96,7 +96,7 @@ export const Promise = {
       <Toaster />
       <Button
         onClick={() => {
-          const promise = new Promise((resolve) =>
+          const promise = new globalThis.Promise((resolve) =>
             setTimeout(() => resolve({ name: "Sonner" }), 2000)
           );
 
